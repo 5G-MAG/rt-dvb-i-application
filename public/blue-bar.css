@@ -1,0 +1,74 @@
+/* ────────────────────────────────────────────────────────────
+   5G-MAG blue bar — reusable top header
+   Drop-in stylesheet. Pair with the markup in blue-bar.html.
+
+   Brand blue: rgb(0,160,210)
+   Font:       Poppins (loaded via @import below; remove if you
+               already load it elsewhere)
+   ──────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+:root {
+  --bluebar-bg:    rgb(0, 160, 210);
+  --bluebar-text:  #ffffff;
+  --bluebar-font:  'Poppins', system-ui, sans-serif;
+  --bluebar-height: 76px;
+}
+
+/* ── The bar ── */
+.blue-bar {
+  height: var(--bluebar-height);
+  padding: 0 20px;
+  background: var(--bluebar-bg);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+  font-family: var(--bluebar-font);
+}
+
+/* ── Logo (left) ── */
+.blue-bar-logo {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.blue-bar-logo img {
+  height: 52px;
+  width: auto;
+  display: block;
+}
+
+/* ── Title (centered) ── */
+.blue-bar-title {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--bluebar-text);
+}
+
+/* ── Actions (right) ── */
+.blue-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.blue-bar-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--bluebar-text);
+  text-decoration: none;
+  font-family: var(--bluebar-font);
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.blue-bar-link:hover { background: rgba(255, 255, 255, 0.25); }

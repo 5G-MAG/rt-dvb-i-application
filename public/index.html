@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- CSP: scripts only from self + the two pinned CDNs (+ inline handlers, to be migrated to
+       addEventListener later). style-src/font-src allow Google Fonts (blue-bar.css @imports
+       Poppins from fonts.googleapis.com, which serves @font-face rules pointing at
+       fonts.gstatic.com) — caught by an E2E browser test; verify with any CSS change.
+
+       img-src/media-src/connect-src allow BOTH http: and https:. This is specifically for dash.js/
+       hls.js's OWN internal fetches of DASH manifests/HLS playlists/segments and <img> logo loads —
+       these go DIRECTLY to the broadcaster's CDN, not through our /proxy (proxying video segments
+       through this server would be far too slow/expensive; this matches how DASH/HLS players
+       normally operate). Service-list/EPG metadata fetches are NOT affected by this and always stay
+       same-origin (resolveUrl() routes any cross-origin metadata request through /proxy), so they
+       never need this rule regardless of what scheme the upstream server uses.
+
+       Per ETSI TS 103 770 V1.2.1 §7.3 ("Use of HTTP over TLS"), HTTPS IS MANDATORY ("shall") for
+       DVB-I metadata endpoints (Service List Registry/Server, Content Guide Server) — i.e. the
+       service list and EPG XML documents themselves — except when client and server share a private
+       subnet (RFC 1918). That "shall" is scoped to the metadata layer; it does not extend to media
+       delivery URIs (the DASH/HLS stream URLs referenced inside DASHDeliveryParameters etc.) — the
+       spec itself includes a worked example using a plain http:// URL in exactly that context. This
+       CSP rule only affects the delivery layer (confirmed via a real Sofia Digital DVB-I reference
+       list where a plain-http DASH manifest was blocked outright before this fix) — it does not
+       relax anything about the (separately mandatory) metadata-endpoint HTTPS requirement, which is
+       an operator/deployment responsibility (see DEPLOYMENT.md), not something enforceable by CSP. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.dashjs.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self' http: https:; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'"/>
+  <title>DVB-I Client</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="stylesheet" href="blue-bar.css"/>
+</head>
+<body>
+
+<header class="blue-bar">
+  <div class="blue-bar-logo"><img src="5gmag.png" alt="5G-MAG logo"></div>
+  <div class="blue-bar-title">DVB-I Client</div>
+  <div class="blue-bar-actions">
+    <a class="blue-bar-link" href="http://localhost:4000" target="_blank" rel="noopener noreferrer">Open Admin Portal ↗</a>
+  </div>
+</header>
+
+<div class="shell">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <span class="dvbi-badge">DVB-I</span>
+      <span id="clock" class="sidebar-clock"></span>
+      <span class="list-name" id="list-name">Loading…</span>
+      <button class="theme-btn" id="theme-btn" title="Toggle light/dark theme">☀</button>
+      <button class="settings-btn" id="settings-btn" title="Settings (S)">⚙</button>
+    </div>
+
+    <div class="settings-panel" id="settings-panel">
+      <label class="settings-label">Service list URL</label>
+      <div class="settings-row">
+        <input class="url-input" id="url-input" type="url" placeholder="https://…/service-list.xml" spellcheck="false"/>
+        <button class="url-load-btn" id="url-load-btn">Load</button>
+      </div>
+      <div class="presets">
+        <button class="preset-btn" data-url="http://localhost:4000/service-list.xml">Demo</button>
+        <button class="preset-btn" data-url="https://dvbi-rest.dtv.fi/services_r4/DVBI(epg)">dtv.fi</button>
+        <button class="preset-btn" data-url="https://raw.githubusercontent.com/DVBproject/dvbi-api-demos/main/service-lists/dvbi-sample.xml">DVB Sample</button>
+      </div>
+      <div class="settings-label" style="margin-top:0.3rem">Service List Registry</div>
+      <div class="settings-row">
+        <input class="url-input" id="slr-input" type="text" placeholder="Country code, e.g. GBR" spellcheck="false" style="text-transform:uppercase"/>
+        <button class="url-load-btn" id="slr-load-btn">Look up</button>
+      </div>
+      <div id="slr-results" hidden></div>
+      <div class="settings-label" style="margin-top:0.4rem">Preferred Audio Language</div>
+      <div class="settings-row">
+        <select class="url-input" id="lang-pref" style="font-family:inherit;flex:1">
+          <option value="">Auto (stream default)</option>
+          <option value="en">English</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="es">Spanish</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option>
+          <option value="ar">Arabic</option>
+          <option value="zh">Chinese</option>
+        </select>
+      </div>
+      <div class="settings-label" style="margin-top:0.4rem">Region Filter</div>
+      <div class="settings-row">
+        <input class="url-input" id="region-filter" type="text" maxlength="8" placeholder="e.g. GBR, EUR — leave blank for all" style="text-transform:uppercase"/>
+        <button class="url-load-btn" id="region-apply-btn">Apply</button>
+      </div>
+      <div class="settings-label" style="margin-top:0.4rem">Custom List <span id="custom-list-count" class="settings-hint"></span></div>
+      <div class="settings-row">
+        <button class="url-load-btn" id="custom-list-load-btn" onclick="loadCustomList()">Load custom list</button>
+        <button class="url-load-btn" id="custom-list-clear-btn" onclick="clearCustomList()">Clear</button>
+      </div>
+      <div class="settings-label" style="margin-top:0.4rem">Parental Controls</div>
+      <div class="settings-row" style="align-items:center;gap:0.5rem">
+        <select class="url-input" id="pg-threshold" style="font-family:inherit;flex:1">
+          <option value="">Off</option>
+          <option value="7">Block 7+</option>
+          <option value="12">Block 12+</option>
+          <option value="16">Block 16+</option>
+          <option value="18">Block 18+</option>
+        </select>
+        <button class="url-load-btn" id="pg-pin-btn" onclick="openPinSetup()">Set PIN</button>
+      </div>
+      <div id="pg-pin-warn" class="settings-hint-warn" hidden>PIN is set — choose a threshold above to activate the lock</div>
+      <div class="version-row" id="version-row"></div>
+    </div>
+
+    <div class="search-wrap">
+      <input class="search-input" id="search-input" type="search" placeholder="Search channels…" autocomplete="off" spellcheck="false"/>
+    </div>
+
+    <div class="genre-bar" id="genre-bar">
+      <button class="genre-pill active" data-genre="">All</button>
+    </div>
+
+    <ul class="channel-list" id="channel-list" role="listbox" aria-label="Channel list"></ul>
+  </aside>
+
+  <!-- Workspace -->
+  <div class="workspace" id="workspace">
+
+    <div class="player-wrap" id="player-wrap">
+      <video id="video" playsinline></video>
+
+      <div id="no-service" class="no-service">
+        <div class="no-service-icon">▶</div>
+        <div class="no-service-title">Select a channel to begin</div>
+        <div class="no-service-hint">↑ ↓ navigate &nbsp;·&nbsp; 1–9 direct tune &nbsp;·&nbsp; E full EPG &nbsp;·&nbsp; S settings &nbsp;·&nbsp; ? help</div>
+      </div>
+
+      <div id="buf-spinner" class="buf-spinner" hidden>
+        <div class="buf-ring"></div>
+      </div>
+
+      <div id="play-error" class="play-error" hidden>
+        <div class="play-error-icon">⚠</div>
+        <div id="play-error-msg" class="play-error-msg">All streams unavailable</div>
+        <button id="play-error-retry" class="play-error-retry">↺ Retry</button>
+      </div>
+
+      <!-- Subscription gate (A184r2 §4.3) -->
+      <div id="sub-gate" class="play-error sub-gate" hidden>
+        <div class="play-error-icon">🔒</div>
+        <div id="sub-gate-msg" class="play-error-msg"></div>
+        <div class="sub-gate-btns">
+          <button id="sub-gate-continue" class="play-error-retry">Try anyway</button>
+          <button id="sub-gate-cancel"   class="play-error-retry sub-gate-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div id="player-overlay" class="player-overlay">
+        <div class="overlay-row">
+          <span id="overlay-lcn"      class="overlay-lcn"></span>
+          <span id="overlay-delivery" class="overlay-delivery"></span>
+          <span id="overlay-type"     class="overlay-type"></span>
+          <span id="overlay-bitrate"  class="overlay-bitrate"></span>
+        </div>
+        <div class="overlay-bottom">
+          <div class="overlay-info">
+            <div id="overlay-name"     class="overlay-name"></div>
+            <div id="overlay-provider" class="overlay-provider"></div>
+          </div>
+          <div class="overlay-controls">
+            <button id="mute-btn" class="ctrl-btn" title="Mute (M)">
+              <svg viewBox="0 0 20 20" width="15" height="15" fill="currentColor" aria-hidden="true">
+                <path d="M11 2.5 5.5 7H2.5v6H5.5L11 17.5V2.5Z"/>
+                <path class="vol-on" d="M13.5 7a5 5 0 0 1 0 6M15.5 5a8 8 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path class="vol-off" d="M13.5 7l4 6M17.5 7l-4 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <div id="vol-bar" class="vol-bar" title="Click or scroll to adjust volume">
+              <div id="vol-fill" class="vol-fill"></div>
+            </div>
+            <button id="fs-btn" class="ctrl-btn" title="Fullscreen (F)">
+              <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="player-toolbar" class="player-toolbar">
+      <div class="tb-info">
+        <span id="tb-lcn" class="tb-lcn" hidden></span>
+        <span id="tb-name" class="tb-name">Select a channel</span>
+        <span id="tb-now" class="tb-now" hidden></span>
+      </div>
+      <!-- Seek bar (VOD + live timeshift §4.1.5) -->
+      <div id="seek-wrap" class="seek-wrap" hidden>
+        <span id="seek-current" class="seek-time">0:00</span>
+        <div id="seek-bar" class="seek-bar" title="Seek">
+          <div id="seek-fill" class="seek-fill"></div>
+        </div>
+        <span id="seek-total" class="seek-time">0:00</span>
+        <span id="seek-live-badge" class="seek-live-badge" hidden>LIVE</span>
+      </div>
+      <div class="tb-actions">
+        <button id="back-to-live-btn" class="tb-btn tb-back-live" hidden onclick="backToLive()">⬤ Live</button>
+        <button id="tb-mute" class="tb-icon-btn" title="Mute (M)">
+          <svg viewBox="0 0 20 20" width="20" height="20" fill="currentColor" aria-hidden="true">
+            <path d="M11 2.5 5.5 7H2.5v6H5.5L11 17.5V2.5Z"/>
+            <path class="vol-on" d="M13.5 7a5 5 0 0 1 0 6M15.5 5a8 8 0 0 1 0 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path class="vol-off" d="M13.5 7l4 6M17.5 7l-4 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <div id="tb-vol-bar" class="tb-vol-bar" title="Click to set volume">
+          <div id="tb-vol-fill" class="tb-vol-fill"></div>
+        </div>
+        <div class="tb-sep"></div>
+        <button id="tb-app-btn" class="tb-btn tb-app-btn" title="Launch linked application (A)" hidden>App</button>
+        <button id="tb-tracks-btn" class="tb-btn" title="Audio &amp; subtitle tracks (T)">Tracks</button>
+        <button id="tb-epg-btn" class="tb-btn" title="Open full programme guide (E)">Full EPG</button>
+        <button id="tb-grid-btn" class="tb-btn" title="EPG grid — all channels (G)">Grid</button>
+        <button id="tb-share-btn" class="tb-btn" title="Copy share link for current channel">Share</button>
+        <button id="tb-pip-btn" class="tb-icon-btn" title="Picture in Picture (P)">
+          <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="4" width="16" height="11" rx="1.5"/>
+            <rect x="11" y="8.5" width="6" height="4.5" rx="1" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
+        <button id="tb-fs-btn" class="tb-icon-btn" title="Fullscreen (F)">
+          <svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+            <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Tracks panel -->
+    <div id="tracks-panel" class="tracks-panel" hidden>
+      <div class="tracks-section">
+        <div class="tracks-label">Audio</div>
+        <div id="tracks-audio" class="tracks-list"><span class="tracks-empty">No audio tracks detected</span></div>
+      </div>
+      <div class="tracks-section">
+        <div class="tracks-label">Subtitles</div>
+        <div id="tracks-text" class="tracks-list"><span class="tracks-empty">No subtitle tracks detected</span></div>
+        <div id="tracks-carriage-note" class="tracks-note" hidden></div>
+      </div>
+    </div>
+
+    <div id="epg-strip" class="epg-strip">
+      <div class="epg-label">EPG <span class="epg-hint">· Press E for full schedule</span></div>
+      <div class="epg-empty">Select a channel to see programme information</div>
+    </div>
+
+    <!-- Full EPG panel -->
+    <div id="epg-panel" class="epg-panel" hidden>
+      <div class="epg-panel-head">
+        <span class="epg-panel-title" id="epg-panel-title">EPG</span>
+        <span class="epg-panel-hint">↑ ↓ browse &nbsp;·&nbsp; E or Esc close</span>
+        <button class="epg-panel-close" id="epg-panel-close">✕</button>
+      </div>
+      <div id="epg-genre-bar" class="epg-genre-bar" hidden></div>
+      <div class="epg-panel-body">
+        <div class="epg-schedule" id="epg-schedule" role="listbox" aria-label="Programme schedule"></div>
+        <div class="epg-detail"   id="epg-detail"><div class="epg-detail-empty">Select a programme</div></div>
+      </div>
+    </div>
+
+    <!-- EPG Grid panel -->
+    <div id="epg-grid-panel" class="epg-grid-panel" hidden>
+      <div class="epg-grid-bar">
+        <span class="epg-grid-title-label">EPG Grid &mdash; All Channels</span>
+        <span class="epg-grid-hint">Click channel to tune &nbsp;·&nbsp; G or Esc close</span>
+        <button class="epg-grid-close" id="epg-grid-close">✕</button>
+      </div>
+      <div id="epg-grid-info" class="epg-grid-info" hidden></div>
+      <div class="epg-grid-scroll" id="epg-grid-scroll">
+        <div class="epg-grid-inner" id="epg-grid-inner"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- LCN digit overlay -->
+<div id="lcn-overlay" class="lcn-overlay" hidden>
+  <div class="lcn-overlay-num"  id="lcn-overlay-num"></div>
+  <div class="lcn-overlay-hint">Tuning…</div>
+</div>
+
+<!-- PIN entry / setup modal -->
+<div id="pin-modal" class="pin-modal" hidden>
+  <div class="pin-panel">
+    <div class="pin-title" id="pin-title">Enter PIN</div>
+    <div class="pin-subtitle" id="pin-subtitle"></div>
+    <div id="pin-dots" class="pin-dots">
+      <span class="pin-dot"></span><span class="pin-dot"></span>
+      <span class="pin-dot"></span><span class="pin-dot"></span>
+    </div>
+    <div class="pin-keypad">
+      <button class="pin-key" data-d="1">1</button>
+      <button class="pin-key" data-d="2">2</button>
+      <button class="pin-key" data-d="3">3</button>
+      <button class="pin-key" data-d="4">4</button>
+      <button class="pin-key" data-d="5">5</button>
+      <button class="pin-key" data-d="6">6</button>
+      <button class="pin-key" data-d="7">7</button>
+      <button class="pin-key" data-d="8">8</button>
+      <button class="pin-key" data-d="9">9</button>
+      <button class="pin-key pin-key-cancel" onclick="cancelPin()">Cancel</button>
+      <button class="pin-key" data-d="0">0</button>
+      <button class="pin-key pin-key-del" onclick="pinDelete()" aria-label="Delete">⌫</button>
+    </div>
+    <div id="pin-error" class="pin-error"></div>
+  </div>
+</div>
+
+<div id="badge-tooltip" hidden></div>
+
+<div id="shortcuts-overlay" class="shortcuts-overlay" hidden>
+  <div class="shortcuts-panel">
+    <div class="shortcuts-title">Keyboard Shortcuts</div>
+    <dl class="shortcuts-grid">
+      <dt>↑ / ↓</dt><dd>Previous / next channel</dd>
+      <dt>1 – 9</dt><dd>Direct tune by channel number</dd>
+      <dt>E</dt><dd>Open / close full EPG</dd>
+      <dt>G</dt><dd>EPG grid &mdash; all channels</dd>
+      <dt>M</dt><dd>Toggle mute</dd>
+      <dt>A</dt><dd>Launch linked application</dd>
+      <dt>T</dt><dd>Audio &amp; subtitle tracks</dd>
+      <dt>P</dt><dd>Picture in Picture</dd>
+      <dt>L</dt><dd>Back to live (during catch-up)</dd>
+      <dt>← / →</dt><dd>Seek &plusmn;10 s (catch-up)</dd>
+      <dt>V</dt><dd>Toggle favourite for current channel</dd>
+      <dt>F</dt><dd>Toggle fullscreen</dd>
+      <dt>S</dt><dd>Open / close settings</dd>
+      <dt>?</dt><dd>This help screen</dd>
+      <dt>Esc</dt><dd>Close panels</dd>
+    </dl>
+    <div class="shortcuts-close">Press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div>
+  </div>
+</div>
+
+<!-- Pinned exact versions with Subresource Integrity (SRI). To upgrade: change the version, then
+     regenerate with: curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js"
+        integrity="sha384-5E8B0pTlZZJMabWpC0fyYf6OUpe15jJij34BqBAh4NXoHAlLNOjCPRrwtOXOQFAn"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.dashjs.org/v5.2.0/dash.all.min.js"
+        integrity="sha384-DUqWPzOl/i7/DGF7SBoe4NrlZOMxxomlJsg3X0daS5SBeFxco3dmwWQPFr2oauXn"
+        crossorigin="anonymous"></script>
+<script src="player.js"></script>
+<script src="epg.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
