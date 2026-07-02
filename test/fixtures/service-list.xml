@@ -163,5 +163,18 @@
     <ServiceType href="urn:dvb:metadata:cs:ServiceTypeCS:2019:linear-radio"/>
     <ContentGuideServiceRef>epg-svc-b</ContentGuideServiceRef>
   </Service>
+  <!-- Gamma TV: broadcast-only, no IP delivery -->
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:c</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DisplayName>Gamma DVB-T</DisplayName>
+      <DVBTDeliveryParameters>
+        <DVBTriplet origNetId="1" tsId="2" serviceId="3"/>
+      </DVBTDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>Gamma TV</ServiceName>
+    <ProviderName>Gamma Media</ProviderName>
+    <ServiceType href="urn:dvb:metadata:cs:ServiceTypeCS:2019:linear"/>
+  </Service>
 
 </ServiceList>

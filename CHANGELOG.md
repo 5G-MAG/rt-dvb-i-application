@@ -1,5 +1,20 @@
 # Changelog — dvb-i-receiver
 
+## 2026-07 (cont. 3) — Broadcast-only services no longer silently disappear
+
+- Services whose only `ServiceInstance` uses broadcast delivery (`DVBTDeliveryParameters`,
+  `DVBSDeliveryParameters`, `DVBCDeliveryParameters` — the DVB-T/S/C tuning triplet) yield zero
+  playable instances in a browser (no TV tuner access), and were previously dropped from the parsed
+  service list entirely with no indication why. Found via a real external list (Sofia Digital) where
+  channel(s) simply never appeared.
+- `parseServiceList()` now keeps these services (flagged `noIpDelivery` + `hasBroadcastDelivery`)
+  instead of filtering them out. `renderChannelList()` shows them with a dimmed "Broadcast only" badge
+  (`.ch-card.no-delivery`). Selecting one shows a clear message ("Broadcast-only service (DVB-T/S/C) —
+  not available via broadband in this browser") instead of attempting playback or showing a generic
+  "stream unavailable" error.
+- Added a `test/fixtures/service-list.xml` service (Gamma TV, DVB-T only) and an `test/e2e.test.js`
+  regression test covering the badge and the selection message.
+
 ## 2026-07 (cont. 2) — Critical fix: EPG never loaded for any cross-origin service list
 
 - **`DVBIEpg.load()` silently returned `null` for every cross-origin EPG endpoint** — the most common

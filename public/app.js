@@ -537,9 +537,21 @@ function parseServiceList(doc) {
     }
 
     const instances = [];
+    let hasBroadcastDelivery = false;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
       const priority = parseInt(inst.getAttribute('priority') || '99', 10);
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
+
+      // Broadcast-only delivery (DVB-T/S/C tuning triplet, §5.2.3) — a browser has no TV tuner,
+      // so these never yield a playable instance. Tracked so the service can still be listed
+      // (with an explanatory badge) instead of silently vanishing.
+      if (!hasBroadcastDelivery) {
+        hasBroadcastDelivery = !!(
+          inst.getElementsByTagNameNS(NS, 'DVBTDeliveryParameters')[0] ||
+          inst.getElementsByTagNameNS(NS, 'DVBSDeliveryParameters')[0] ||
+          inst.getElementsByTagNameNS(NS, 'DVBCDeliveryParameters')[0]
+        );
+      }
 
       // Accessibility — ContentAttributes/AccessibilityAttributes. The AccessibilityAttributes
       // WRAPPER is a DVB-I element (its children SubtitleAttributes/AudioDescriptionAttributes are
@@ -676,8 +688,12 @@ function parseServiceList(doc) {
     } : null;
 
     instances.sort((a, b) => a.priority - b.priority);
-    if (displayName && instances.length) {
-      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, available, availableFrom, availableTo, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams });
+    // A service with a real ServiceInstance but zero playable (IP-deliverable) instances is kept
+    // in the list — noIpDelivery lets the UI show it as broadcast-only rather than hiding it.
+    const instanceCount = svc.getElementsByTagNameNS(NS, 'ServiceInstance').length;
+    const noIpDelivery = instances.length === 0 && instanceCount > 0;
+    if (displayName && (instances.length || noIpDelivery)) {
+      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, available, availableFrom, availableTo, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery });
     }
   }
 
@@ -856,10 +872,14 @@ function renderChannelList() {
       : (!svc.subscriptionPackage && svc.serviceRestriction && svc.serviceRestriction !== 'none'
           ? `<span class="ch-badge ch-badge-sub" data-tooltip="${svc.serviceRestriction === 'subscription' ? 'Subscription required' : 'Conditional access required'}">${svc.serviceRestriction === 'subscription' ? 'SUB' : 'CA'}</span>` : '');
     const unavailableTag = svc.available === false ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
+    const broadcastTag = svc.noIpDelivery
+      ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : 'No playable delivery method listed for this service'}">Broadcast only</span>`
+      : '';
     const badges = [
       hasAD    ? '<span class="ch-badge ch-badge-ad"  data-tooltip="Audio Description: narration for visually impaired viewers">AD</span>'  : '',
       hasHoH   ? '<span class="ch-badge ch-badge-hoh" data-tooltip="Hard of Hearing: subtitles with sound effects and speaker labels">HoH</span>' : '',
       isMCOnly ? '<span class="ch-badge ch-badge-mc"  data-tooltip="Multicast delivery only — not playable in a browser">MC</span>' : '',
+      broadcastTag,
       rating && rating !== 'none' ? `<span class="ch-badge ch-badge-pg" data-tooltip="Minimum parental age rating">${rating}+</span>` : '',
       subTag,
       regionTag,
@@ -867,7 +887,8 @@ function renderChannelList() {
     ].join('');
 
     const li = document.createElement('li');
-    li.className = svc.available === false ? 'ch-card unavailable' : 'ch-card';
+    li.className = svc.available === false ? 'ch-card unavailable'
+      : svc.noIpDelivery ? 'ch-card no-delivery' : 'ch-card';
     li.dataset.idx = idx;
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', 'false');
@@ -967,6 +988,33 @@ function selectService(idx) {
     const toStr   = svc.availableTo   ? `until ${new Date(svc.availableTo).toLocaleDateString()}`   : '';
     const avWindow = [fromStr, toStr].filter(Boolean).join(' ');
     playErrorMsg.textContent = `Service off-air${avWindow ? ` (available ${avWindow})` : ''}`;
+    loadServiceEPG(idx);
+    return;
+  }
+
+  // Broadcast-only service (DVB-T/S/C tuning triplet, no IP delivery) — a browser has no TV
+  // tuner, so there is nothing to fetch. Show a clear explanation instead of attempting playback.
+  if (svc.noIpDelivery) {
+    currentIdx = idx;
+    document.querySelectorAll('.ch-card').forEach(el => {
+      const active = parseInt(el.dataset.idx, 10) === idx;
+      el.classList.toggle('active', active);
+      el.setAttribute('aria-selected', String(active));
+    });
+    scrollActiveCard();
+    noService.style.display = 'none';
+    tbName.textContent = svc.name;
+    if (svc.lcn != null) { tbLcn.textContent = `CH ${svc.lcn}`; tbLcn.hidden = false; }
+    else tbLcn.hidden = true;
+    tbNow.hidden = true;
+    DVBIPlayer.stop();
+    bufSpinner.hidden = true;
+    isCatchup = false;
+    backToLiveBtn.hidden = true;
+    playError.hidden = false;
+    playErrorMsg.textContent = svc.hasBroadcastDelivery
+      ? 'Broadcast-only service (DVB-T/S/C) — not available via broadband in this browser'
+      : 'No playable delivery method listed for this service';
     loadServiceEPG(idx);
     return;
   }

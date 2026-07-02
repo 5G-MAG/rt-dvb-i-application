@@ -84,12 +84,15 @@ test('receiver loads a service list and renders channels from it', { skip: !play
 
   await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'networkidle' });
 
-  // Channel list should render both services from the fixture (Alpha One, Beta Radio).
+  // Channel list should render all three services from the fixture (Alpha One, Beta Radio,
+  // and Gamma TV — the last being broadcast-only/DVB-T with no IP delivery, listed rather
+  // than silently dropped).
   await page.waitForSelector('.ch-name', { timeout: 10000 });
   const names = await page.$$eval('.ch-name', els => els.map(e => e.textContent.trim()));
-  assert.equal(names.length, 2, `expected 2 channels, got: ${JSON.stringify(names)}`);
+  assert.equal(names.length, 3, `expected 3 channels, got: ${JSON.stringify(names)}`);
   assert.ok(names.some(n => n.includes('Alpha One')), `expected "Alpha One" among: ${JSON.stringify(names)}`);
   assert.ok(names.some(n => n.includes('Beta Radio')), `expected "Beta Radio" among: ${JSON.stringify(names)}`);
+  assert.ok(names.some(n => n.includes('Gamma TV')), `expected "Gamma TV" among: ${JSON.stringify(names)}`);
 
   // No uncaught JS errors during load/parse/render.
   assert.deepEqual(consoleErrors, [], `unexpected console/page errors: ${JSON.stringify(consoleErrors)}`);
@@ -118,4 +121,23 @@ test('EPG data actually loads and renders (not stuck on "Loading…")', { skip: 
   );
   const stripText = await page.textContent('#epg-strip');
   assert.ok(stripText.includes('Fixture Now Playing'), `expected the fixture programme title in the EPG strip, got: ${stripText}`);
+});
+
+// Regression test: services whose only ServiceInstance is broadcast delivery (DVB-T/S/C tuning
+// triplet, no DASH/HLS/multicast) used to be silently excluded from the channel list entirely —
+// a browser has no TV tuner so there was nothing to play, but the service just vanished with no
+// indication of why. Now it is listed with a "Broadcast only" badge, and selecting it shows a
+// clear explanation instead of a confusing "stream unavailable" error or a crash.
+test('broadcast-only service is listed with a badge and a clear selection message', { skip: !playwright }, async () => {
+  const card = page.locator('.ch-card:has(.ch-name:text("Gamma TV"))');
+  await card.waitFor({ timeout: 5000 });
+  assert.ok(await card.evaluate(el => el.classList.contains('no-delivery')), 'Gamma TV card should have the no-delivery class');
+  const badge = await card.locator('.ch-badge:text("Broadcast only")').textContent();
+  assert.equal(badge.trim(), 'Broadcast only');
+
+  await card.click();
+  await page.waitForSelector('#tb-name:has-text("Gamma TV")', { timeout: 5000 });
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  const errorText = (await page.textContent('#play-error-msg')).trim();
+  assert.match(errorText, /Broadcast-only service.*not available via broadband/);
 });

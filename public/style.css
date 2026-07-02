@@ -207,6 +207,8 @@ html, body {
 .ch-card.active { background: rgba(10,132,255,0.1); border-left: 2px solid var(--accent); padding-left: calc(0.9rem - 2px); }
 .ch-card.unavailable { opacity: 0.45; }
 .ch-card.unavailable:hover { background: rgba(255,69,58,0.06); }
+.ch-card.no-delivery { opacity: 0.55; }
+.ch-card.no-delivery:hover { background: rgba(191,90,242,0.06); }
 
 .ch-lcn {
   width: 30px; height: 30px; border-radius: 50%;
