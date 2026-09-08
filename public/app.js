@@ -736,8 +736,20 @@ async function loadServiceList(urlOrUrls) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const lm = res.headers.get('Last-Modified');
       if (lm) lastModifiedMap[url] = lm;
-      const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
-      if (doc.querySelector('parsererror')) throw new Error('Service list is not valid XML');
+      const ctype = (res.headers.get('Content-Type') || '').toLowerCase();
+      const body  = await res.text();
+      const doc = new DOMParser().parseFromString(body, 'application/xml');
+      if (doc.querySelector('parsererror')) {
+        // Naming what actually arrived turns the commonest mistake into a self-explaining one:
+        // a URL pointing at a portal's home page, or at an API, answers 200 with HTML or JSON,
+        // and "not valid XML" alone gives no hint that the URL itself is the problem.
+        const looksHtml = /html/.test(ctype) || /^\s*<!doctype html/i.test(body);
+        const looksJson = /json/.test(ctype) || /^\s*[{[]/.test(body);
+        const what = looksHtml ? 'an HTML page' : looksJson ? 'a JSON response' : `content of type ${ctype || 'unknown'}`;
+        throw new Error(!body.trim()
+          ? `${url} returned an empty response`
+          : `${url} returned ${what}, not a DVB-I service list. Check the URL in settings: it should be the service list itself, for example http://localhost:4000/service-list.xml`);
+      }
       const parsed = parseServiceList(doc);
 
       // Committed to a new list now — tear down current state and rebuild.

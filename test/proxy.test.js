@@ -3,11 +3,15 @@
 // pin the guard's behaviour, including the allowlist that makes local testing possible without
 // switching it off.
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
-process.env.PROXY_ALLOW_ORIGINS = 'http://localhost:4000, http://127.0.0.1:4000/';
+// A fixed port so it can be named in the allowlist, which is read when server.js is required.
+const UPSTREAM_PORT = 45997;
+process.env.PROXY_ALLOW_ORIGINS =
+  `http://localhost:4000, http://127.0.0.1:4000/, http://127.0.0.1:${UPSTREAM_PORT}`;
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { assertSafeUrl, isPrivateIp } = require('../server.js');
+const http = require('node:http');
+const { app, assertSafeUrl, isPrivateIp } = require('../server.js');
 
 async function allowed(url) {
   try { await assertSafeUrl(url); return true; } catch { return false; }
@@ -52,5 +56,46 @@ test('isPrivateIp covers the ranges the guard relies on', () => {
   }
   for (const ip of ['8.8.8.8', '1.1.1.1', '172.32.0.1', '2606:4700::1111']) {
     assert.equal(isPrivateIp(ip), false, `${ip} should be public`);
+  }
+});
+
+// The proxy used to answer 200 whatever the origin said, so a 404 arrived as a 200 carrying an
+// error page and the caller reported it as unparseable content rather than a missing document.
+test('the upstream status is relayed, not flattened to 200', async (t) => {
+  const upstream = http.createServer((req, res) => {
+    if (req.url === '/list.xml') {
+      res.writeHead(200, { 'Content-Type': 'application/xml' });
+      res.end('<?xml version="1.0"?><ServiceList/>');
+    } else if (req.url === '/gone') {
+      res.writeHead(404, { 'Content-Type': 'text/html' });
+      res.end('<!doctype html><p>not here</p>');
+    } else {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('boom');
+    }
+  });
+  try {
+    await new Promise((ok, err) => {
+      upstream.once('error', err);
+      upstream.listen(UPSTREAM_PORT, '127.0.0.1', ok);
+    });
+  } catch {
+    t.skip(`port ${UPSTREAM_PORT} is in use`);
+    return;
+  }
+
+  const server = app.listen(0);
+  await new Promise(r => server.once('listening', r));
+  const port = server.address().port;
+  const via = p => fetch(`http://127.0.0.1:${port}/proxy?url=` +
+                         encodeURIComponent(`http://127.0.0.1:${UPSTREAM_PORT}${p}`));
+
+  try {
+    assert.equal((await via('/list.xml')).status, 200);
+    assert.equal((await via('/gone')).status, 404, 'a 404 upstream must not arrive as 200');
+    assert.equal((await via('/broken')).status, 500, 'a 500 upstream must not arrive as 200');
+  } finally {
+    server.close();
+    upstream.close();
   }
 });

@@ -1,5 +1,19 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont. 2) — Say which URL failed, and relay the origin's status
+
+- **A service list that will not parse now names the URL and what arrived.** Pointing the receiver
+  at a portal's home page, or at an API, gets a 200 carrying HTML or JSON, and the old message,
+  "Service list is not valid XML", gave no hint that the URL itself was the mistake. It now reads,
+  for example: `http://localhost:4000/ returned an HTML page, not a DVB-I service list. Check the
+  URL in settings: it should be the service list itself, for example
+  http://localhost:4000/service-list.xml`. An empty response is reported as empty rather than as
+  malformed.
+
+- **`/proxy` relays the upstream status code** instead of answering 200 regardless. Flattening it
+  hid the real failure: a 404 from the origin reached the caller as a 200 whose body was an error
+  page, which then surfaced as unparseable content rather than as a missing document.
+
 ## 2026-09 (cont.) — /proxy allowlist replaces the blanket bypass
 
 - **`PROXY_ALLOW_ORIGINS` replaces `ALLOW_LOOPBACK_PROXY`.** Local testing needs the receiver to

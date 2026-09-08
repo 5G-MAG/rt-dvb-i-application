@@ -118,6 +118,10 @@ app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
     const upstream = await fetch(url, {
       headers: { 'User-Agent': 'DVBIReceiver/1.0', Accept: 'application/xml,*/*' },
     });
+    // Relay the upstream status rather than always answering 200. Flattening it hid the real
+    // failure: a 404 from the origin arrived as a 200 whose body was an error page, and the
+    // caller reported it as unparseable content instead of as the missing document it was.
+    res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/xml');
     res.send(await upstream.text());
   } catch (e) {
