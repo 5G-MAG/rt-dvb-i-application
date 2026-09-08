@@ -107,6 +107,31 @@ async function assertSafeUrl(rawUrl) {
   return u;
 }
 
+// Read a response body with a ceiling on it. Without one, this endpoint reads whatever the
+// upstream sends fully into memory before answering, so a single request naming a large or endless
+// resource exhausts the process. A service list is metadata: PROXY_MAX_BYTES bounds it generously
+// rather than tightly, and a body that exceeds it is refused instead of truncated, because a
+// truncated service list is invalid XML and would be reported as a parse error rather than as the
+// size limit it is.
+const PROXY_MAX_BYTES = Number(process.env.PROXY_MAX_BYTES || 10 * 1024 * 1024);
+
+async function readCapped(response) {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > PROXY_MAX_BYTES) {
+    throw new Error(`Response is ${declared} bytes, over the ${PROXY_MAX_BYTES} byte limit`);
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of response.body) {
+    total += chunk.length;
+    if (total > PROXY_MAX_BYTES) {
+      throw new Error(`Response exceeded the ${PROXY_MAX_BYTES} byte limit`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 // CORS proxy — lets the browser load any DVB-I service list URL
 app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
   const { url } = req.query;
@@ -123,7 +148,7 @@ app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
     // caller reported it as unparseable content instead of as the missing document it was.
     res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/xml');
-    res.send(await upstream.text());
+    res.send(await readCapped(upstream));
   } catch (e) {
     logger.warn('proxy fetch failed', { url, error: String(e.message || e) });
     res.status(502).json({ error: String(e) });

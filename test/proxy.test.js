@@ -7,6 +7,7 @@ process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
 const UPSTREAM_PORT = 45997;
 process.env.PROXY_ALLOW_ORIGINS =
   `http://localhost:4000, http://127.0.0.1:4000/, http://127.0.0.1:${UPSTREAM_PORT}`;
+process.env.PROXY_MAX_BYTES = String(64 * 1024);
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -94,6 +95,47 @@ test('the upstream status is relayed, not flattened to 200', async (t) => {
     assert.equal((await via('/list.xml')).status, 200);
     assert.equal((await via('/gone')).status, 404, 'a 404 upstream must not arrive as 200');
     assert.equal((await via('/broken')).status, 500, 'a 500 upstream must not arrive as 200');
+  } finally {
+    server.close();
+    upstream.close();
+  }
+});
+
+// Without a ceiling this endpoint reads whatever the upstream sends fully into memory before
+// answering, so one request naming a large or endless resource exhausts the process.
+test('an oversized upstream response is refused, not buffered', async (t) => {
+  const cap = Number(process.env.PROXY_MAX_BYTES);
+  const upstream = http.createServer((req, res) => {
+    if (req.url === '/big') {
+      res.writeHead(200, { 'Content-Type': 'application/xml' });
+      res.end('x'.repeat(cap * 2));                       // no content-length trick: just too big
+    } else if (req.url === '/lying') {
+      res.writeHead(200, { 'Content-Type': 'application/xml', 'Content-Length': String(cap * 2) });
+      res.end('x'.repeat(cap * 2));                       // declares its size up front
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/xml' });
+      res.end('<?xml version="1.0"?><ServiceList/>');
+    }
+  });
+  try {
+    await new Promise((ok, err) => {
+      upstream.once('error', err);
+      upstream.listen(UPSTREAM_PORT, '127.0.0.1', ok);
+    });
+  } catch {
+    t.skip(`port ${UPSTREAM_PORT} is in use`);
+    return;
+  }
+
+  const server = app.listen(0);
+  await new Promise(r => server.once('listening', r));
+  const port = server.address().port;
+  const via = p => fetch(`http://127.0.0.1:${port}/proxy?url=` +
+                         encodeURIComponent(`http://127.0.0.1:${UPSTREAM_PORT}${p}`));
+  try {
+    assert.equal((await via('/ok')).status, 200, 'a normal body still passes');
+    assert.equal((await via('/big')).status, 502, 'an oversized body must be refused');
+    assert.equal((await via('/lying')).status, 502, 'a declared oversize must be refused too');
   } finally {
     server.close();
     upstream.close();

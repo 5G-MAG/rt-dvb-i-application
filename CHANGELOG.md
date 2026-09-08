@@ -1,5 +1,15 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont. 4) — /proxy response size limit
+
+- **`/proxy` will not read an unbounded response into memory.** It fetched the upstream body in
+  full before answering, so one request naming a large or endless resource exhausted the process.
+  `PROXY_MAX_BYTES` (10 MB by default) bounds it, checked both against a declared `Content-Length`
+  and while reading, since the declaration can be absent or wrong. An oversized body is refused
+  rather than truncated: a truncated service list is invalid XML and would surface as a parse
+  error rather than as the size limit it is.
+
+
 ## 2026-09 (cont. 3) — The browser suite can pick its engine
 
 - **`BROWSER` selects the Playwright engine**, chromium by default because it is the closest
