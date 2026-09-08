@@ -1,6 +1,6 @@
 # DVB-I Receiver — Deployment & Operations
 
-Browser player that loads and renders a DVB-I service list. Companion project: `dvb-i-admin`
+Browser player that loads and renders a DVB-I service list. Companion project: `rt-dvb-i-application-provider`
 (generates the service list this app consumes) — see its `DEPLOYMENT.md` for admin-side details.
 
 ## Running

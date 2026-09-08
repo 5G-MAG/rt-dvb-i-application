@@ -1,5 +1,5 @@
 {
-  "name": "dvb-i-receiver",
+  "name": "rt-dvb-i-application",
   "version": "1.0.0",
   "description": "DVB-I Client — browser-based DVB-I service list player with CORS proxy",
   "main": "server.js",

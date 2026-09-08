@@ -1,4 +1,28 @@
-# Changelog — dvb-i-receiver
+# Changelog — rt-dvb-i-application
+
+## 2026-09 — E2E launch flags, and the rename
+
+- **`CHROMIUM_ARGS`** passes extra launch flags to the Playwright browser in `test/e2e.test.js`.
+  Unset by default, so a normal machine still tests the normal multi-process browser, which is what
+  a real viewer runs.
+
+  It exists for environments whose sandbox stops a renderer process acquiring resources. There, every
+  subresource fetch fails with `net::ERR_INSUFFICIENT_RESOURCES` and the renderer then crashes: the
+  page loads but nothing renders, so all four browser tests fail while the unit tests pass. The
+  application is not at fault, and this was confirmed rather than assumed: the same page, server and
+  fixture render all three channels under `--single-process`, and fail under every multi-process
+  launch mode, including with all external resources stubbed locally. It is not machine load, not a
+  cgroup pid or memory cap, and not page weight, each of which was ruled out separately.
+
+  On such a machine:
+
+  ```bash
+  CHROMIUM_ARGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --single-process" npm test
+  ```
+
+- **Renamed** from `dvb-i-client` to `rt-dvb-i-application`, alongside `dvb-i-admin` becoming
+  `rt-dvb-i-application-provider`.
+
 
 ## 2026-07 (cont. 3) — Broadcast-only services no longer silently disappear
 
