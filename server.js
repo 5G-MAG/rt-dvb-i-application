@@ -79,16 +79,28 @@ function isPrivateIp(ip) {
   return false;
 }
 
-// Dev-only escape hatch: when both the admin tool and the receiver run on localhost/LAN (the
-// normal local testing setup), the SSRF guard correctly refuses to proxy to a loopback/private
-// address. Setting ALLOW_LOOPBACK_PROXY=1 disables that check so local testing works. Never set
-// this in a deployment reachable from untrusted networks — it defeats the SSRF protection.
-const ALLOW_LOOPBACK_PROXY = process.env.ALLOW_LOOPBACK_PROXY === '1';
+// When the service list is published on the same machine (the normal local testing setup) the
+// SSRF guard correctly refuses to proxy to a loopback or private address. PROXY_ALLOW_ORIGINS
+// names the specific origins that may be proxied anyway, comma separated and matched exactly on
+// scheme, host and port:
+//
+//   PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000"
+//
+// Everything not named stays guarded, so this permits one known service list rather than turning
+// the protection off. Note that an allowlisted origin skips the address check by design, so a
+// hostname that later resolves elsewhere would be followed: name origins you control.
+const PROXY_ALLOW_ORIGINS = new Set(
+  (process.env.PROXY_ALLOW_ORIGINS || '')
+    .split(',')
+    .map(o => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map(o => { try { return new URL(o).origin; } catch { return o; } })
+);
 
 async function assertSafeUrl(rawUrl) {
   const u = new URL(rawUrl); // throws on invalid
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Only http/https URLs are allowed');
-  if (ALLOW_LOOPBACK_PROXY) return u;
+  if (PROXY_ALLOW_ORIGINS.has(u.origin)) return u;
   const host = u.hostname.replace(/^\[|\]$/g, '');
   const addrs = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true })).map(a => a.address);
   if (!addrs.length || addrs.some(isPrivateIp)) throw new Error('URL resolves to a disallowed (private/loopback) address');
@@ -121,8 +133,17 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 // HTTP if unset — the recommended production pattern is TLS termination at a reverse proxy
 // (see DEPLOYMENT.md), but native HTTPS is supported for standalone deployments.
 function startServer() {
-  if (ALLOW_LOOPBACK_PROXY) {
-    logger.warn('ALLOW_LOOPBACK_PROXY=1 — /proxy SSRF guard is DISABLED. Dev/local-testing only; never set this in a deployment reachable from untrusted networks.');
+  if (PROXY_ALLOW_ORIGINS.size) {
+    logger.warn('/proxy will follow these origins without the private-address check', {
+      origins: [...PROXY_ALLOW_ORIGINS],
+    });
+  }
+  if (process.env.ALLOW_LOOPBACK_PROXY === '1') {
+    // Previously this disabled the guard outright. Ignoring it silently would leave a deployment
+    // believing it still had the exemption it asked for, so say what to use instead.
+    logger.error('ALLOW_LOOPBACK_PROXY is no longer supported and has been ignored. ' +
+                 'Use PROXY_ALLOW_ORIGINS to name the origins that may be proxied, ' +
+                 'e.g. PROXY_ALLOW_ORIGINS="http://localhost:4000".');
   }
   const keyPath = process.env.HTTPS_KEY_PATH, certPath = process.env.HTTPS_CERT_PATH;
   if (keyPath && certPath) {

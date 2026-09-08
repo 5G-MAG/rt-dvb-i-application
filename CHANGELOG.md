@@ -1,5 +1,28 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont.) — /proxy allowlist replaces the blanket bypass
+
+- **`PROXY_ALLOW_ORIGINS` replaces `ALLOW_LOOPBACK_PROXY`.** Local testing needs the receiver to
+  fetch a service list published on the same machine, which the SSRF guard correctly refuses. The
+  old flag solved that by switching the guard off entirely; the new one names the origins that may
+  be fetched anyway, matched exactly on scheme, host and port:
+
+  ```bash
+  PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
+  ```
+
+  Everything not named stays guarded. Even the same host on a different port is refused, which the
+  old flag allowed. An allowlisted origin does skip the address check by design, so name only
+  origins you control.
+
+  `ALLOW_LOOPBACK_PROXY` is now ignored and logs an error saying what to use instead, rather than
+  being silently dropped, which would leave a deployment believing it still had the exemption.
+
+- **`test/proxy.test.js`**, 5 cases pinning the guard: allowlisted origins pass, the same host on
+  another port does not, private/loopback/link-local and cloud metadata stay blocked, non-http
+  schemes are refused, public addresses still work.
+
+
 ## 2026-09 — E2E launch flags, and the rename
 
 - **`CHROMIUM_ARGS`** passes extra launch flags to the Playwright browser in `test/e2e.test.js`.
