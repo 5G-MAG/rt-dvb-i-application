@@ -1,5 +1,24 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont. 3) — The browser suite can pick its engine
+
+- **`BROWSER` selects the Playwright engine**, chromium by default because it is the closest
+  stand-in for what most viewers run. `BROWSER=firefox npm test` runs the same suite on Firefox.
+
+  This exists because chromium cannot run in some environments: where the sandbox stops a renderer
+  process acquiring resources, every subresource fetch fails with `net::ERR_INSUFFICIENT_RESOURCES`
+  and the renderer crashes, so the page loads and nothing renders. All four browser tests then fail
+  while the rest pass, which reads like a defect in the application and is not one. On such a
+  machine Firefox runs the identical suite green and repeatably, which is a better answer than the
+  `--single-process` chromium workaround recorded previously: that one was itself erratic, measured
+  at 4/4, 3/4, 4/4 and later 0/4 on unchanged code.
+
+- **Playback verified end to end** on that engine for the first time, against a live local origin:
+  a tuned channel reaches `readyState` 4, 960x540, with `currentTime` advancing in real time and
+  the buffer growing across successive samples, no media error, and dash.js fetching init and media
+  segments from the origin. Until now every check had stopped at the HTTP and XML level.
+
+
 ## 2026-09 (cont. 2) — Say which URL failed, and relay the origin's status
 
 - **A service list that will not parse now names the URL and what arrived.** Pointing the receiver

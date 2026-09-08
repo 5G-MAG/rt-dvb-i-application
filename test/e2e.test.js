@@ -67,14 +67,19 @@ before(async () => {
   app.get('/epg/schedule', (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/epg/nownext',  (req, res) => res.type('application/xml').send(fixtureEpgXml()));
 
-  // CHROMIUM_ARGS passes extra launch flags, for environments where the default multi-process
-  // browser cannot run. On a machine whose sandbox prevents a renderer process from acquiring
-  // resources, every subresource fetch fails with net::ERR_INSUFFICIENT_RESOURCES and the renderer
-  // then crashes, so the page loads but nothing renders; CHROMIUM_ARGS=--single-process makes the
-  // same page render correctly there. Unset by default, so a normal machine tests the normal
-  // multi-process browser, which is what a real viewer runs.
+  // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
+  // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
+  // acquiring resources, every subresource fetch fails with net::ERR_INSUFFICIENT_RESOURCES and
+  // the renderer crashes, so the page loads and nothing renders. BROWSER=firefox runs the same
+  // suite on an engine that does not use that process model and is unaffected.
+  //
+  // CHROMIUM_ARGS passes extra flags, and applies only to chromium: --single-process is one
+  // workaround for the above, though a different engine is the more reliable one.
+  const engine = process.env.BROWSER || 'chromium';
+  if (!playwright[engine]) throw new Error(`Unknown BROWSER "${engine}", expected chromium, firefox or webkit`);
   const extraArgs = (process.env.CHROMIUM_ARGS || '').split(/\s+/).filter(Boolean);
-  browser = await playwright.chromium.launch(extraArgs.length ? { args: extraArgs } : {});
+  const opts = engine === 'chromium' && extraArgs.length ? { args: extraArgs } : {};
+  browser = await playwright[engine].launch(opts);
   page = await browser.newPage();
 });
 
