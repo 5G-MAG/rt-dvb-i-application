@@ -24,7 +24,7 @@ let currentVersion = null;
 
 let currentListUrl = localStorage.getItem('dvbi-url') || DEFAULT_URL;
 let epgCache    = {};
-let lastModifiedMap = {}; // url → Last-Modified value for conditional requests (§4.3.2.2)
+let lastModifiedMap = {}; // url → Last-Modified value for conditional requests (TS 103 770 §4.3.2.2)
 let pollTimer   = null;
 let epgTimer    = null;
 let overlayTimer = null;
@@ -54,10 +54,10 @@ let regionFilter = localStorage.getItem('dvbi-region') || '';
 // Catch-up state
 let isCatchup = false;
 
-// LCN tables stored for region-aware reassignment (§4.8 Table 4.8-1)
+// LCN tables stored for region-aware reassignment (A184r2 §4.8 Table 4.8-1)
 let rawLCNTables = [];
 
-// User-defined custom list — services saved from any loaded service list (§4.7 Roaming)
+// User-defined custom list — services saved from any loaded service list (A184r2 §4.7 Roaming)
 let customList = JSON.parse(localStorage.getItem('dvbi-custom') || '[]');
 let isCustomListActive = false;
 
@@ -281,7 +281,7 @@ function fmtTime(s) {
 videoEl.addEventListener('durationchange', () => {
   const live      = !isFinite(videoEl.duration);
   const timeshift = DVBIPlayer.isLiveTimeshift();
-  // Show seek bar for VOD (finite duration) or live with DVR window (§4.1.5)
+  // Show seek bar for VOD (finite duration) or live with DVR window (A184r2 §4.1.5)
   seekWrap.hidden = live && !timeshift;
   seekLiveBadge.hidden = !timeshift;
   seekTotal.textContent = (live || timeshift) ? '' : fmtTime(videoEl.duration);
@@ -421,7 +421,7 @@ function parseServiceList(doc) {
   const version = root?.getAttribute('version') || null;
   const name    = getNS(doc, 'Name', NS) || 'DVB-I Service List';
 
-  // Parse LCNTables with optional TargetRegion (§4.8 / Table 4.8-1)
+  // Parse LCNTables with optional TargetRegion (A184r2 §4.8 / Table 4.8-1)
   const lcnTables = [];
   for (const tbl of doc.getElementsByTagNameNS(NS, 'LCNTable')) {
     // TargetRegion is a child element (RegionIdRefType); tolerate the legacy attribute form too
@@ -447,7 +447,7 @@ function parseServiceList(doc) {
     if (Object.keys(entries).length) lcnTables.push({ targetRegion: null, entries });
   }
 
-  // Build ContentGuideSource maps: CGSID → schedule URL and now/next URL (§6.5.3)
+  // Build ContentGuideSource maps: CGSID → schedule URL and now/next URL (TS 103 770 §6.5.3)
   const cgsMap        = {};
   const cgsNowNextMap = {};
   for (const cgs of doc.getElementsByTagNameNS(NS, 'ContentGuideSource')) {
@@ -472,7 +472,7 @@ function parseServiceList(doc) {
 
     let logo = null;
     for (const rm of svc.getElementsByTagNameNS(NS, 'RelatedMaterial')) {
-      // HowRelated is in TVA namespace (§6.10); fall back to DVB-I namespace for old lists
+      // HowRelated is in TVA namespace (TS 103 770 §6.10); fall back to DVB-I namespace for old lists
       const hr = rm.getElementsByTagNameNS(NS_TVA, 'HowRelated')[0]
               || rm.getElementsByTagNameNS(NS, 'HowRelated')[0];
       if (hr && (hr.getAttribute('href') || '').includes('1001.2')) {
@@ -483,7 +483,7 @@ function parseServiceList(doc) {
       }
     }
 
-    // Linked application (§5.2, A184r2 §5.2) — RelatedMaterial with LinkedApplicationCS HowRelated
+    // Linked application (TS 103 770 §5.2.3.1, A184r2 §5.2) — RelatedMaterial with LinkedApplicationCS HowRelated
     let linkedApp = null;
     for (const rm of svc.getElementsByTagNameNS(NS, 'RelatedMaterial')) {
       const hr = rm.getElementsByTagNameNS(NS_TVA, 'HowRelated')[0]
@@ -509,7 +509,7 @@ function parseServiceList(doc) {
       displayName = (noLang || nameEls[0]).textContent.trim();
     }
 
-    // Genre — ServiceGenre (§5.5.2); fall back to old Genre element name for backward compat
+    // Genre — ServiceGenre (TS 103 770 §5.5.2); fall back to old Genre element name for backward compat
     const genreEl  = svc.getElementsByTagNameNS(NS, 'ServiceGenre')[0]
       || svc.getElementsByTagNameNS(NS, 'Genre')[0];
     let genre = null;
@@ -524,7 +524,7 @@ function parseServiceList(doc) {
       }
     }
 
-    // Parental rating — ParentalRating/MinimumAge at service level (§5.5.28)
+    // Parental rating — ParentalRating/MinimumAge at service level (TS 103 770 §5.5.28)
     // Also accept old ParentalGuidance element for backward compat
     let parentalRating = null;
     const prEl = svc.getElementsByTagNameNS(NS, 'ParentalRating')[0]
@@ -542,7 +542,7 @@ function parseServiceList(doc) {
       const priority = parseInt(inst.getAttribute('priority') || '99', 10);
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
 
-      // Broadcast-only delivery (DVB-T/S/C tuning triplet, §5.2.3) — a browser has no TV tuner,
+      // Broadcast-only delivery (DVB-T/S/C tuning triplet, TS 103 770 §5.5.18 Delivery Parameters) — a browser has no TV tuner,
       // so these never yield a playable instance. Tracked so the service can still be listed
       // (with an explanatory badge) instead of silently vanishing.
       if (!hasBroadcastDelivery) {
@@ -555,7 +555,7 @@ function parseServiceList(doc) {
 
       // Accessibility — ContentAttributes/AccessibilityAttributes. The AccessibilityAttributes
       // WRAPPER is a DVB-I element (its children SubtitleAttributes/AudioDescriptionAttributes are
-      // tva:). Match the wrapper by localName in any namespace to tolerate both. (§4.9)
+      // tva:). Match the wrapper by localName in any namespace to tolerate both. (A184r2 §4.9)
       const caEl  = inst.getElementsByTagNameNS(NS, 'ContentAttributes')[0];
       const aaEl  = caEl?.getElementsByTagNameNS('*', 'AccessibilityAttributes')[0];
       const hasAudioDescription = !!(aaEl?.getElementsByTagNameNS(NS_TVA, 'AudioDescriptionAttributes')[0])
@@ -563,14 +563,14 @@ function parseServiceList(doc) {
       const hasHardOfHearing    = !!(aaEl?.getElementsByTagNameNS(NS_TVA, 'SubtitleAttributes')[0])
         || inst.getElementsByTagNameNS(NS, 'HasHardOfHearing')[0]?.textContent.trim() === 'true';
 
-      // Subtitle carriage type (§4.9) — last segment of SubtitleCarriageCS:2023 URI
+      // Subtitle carriage type (A184r2 §4.9) — last segment of SubtitleCarriageCS:2023 URI
       // 1=application subtitles, 2=in MPEG-2 TS, 3=in ISOBMFF/DASH, 4=standalone, 5=open/in-video, 99=other
       const subtitleCarriage = (aaEl
         ?.getElementsByTagNameNS(NS_TVA, 'SubtitleAttributes')[0]
         ?.getElementsByTagNameNS(NS_TVA, 'Carriage')[0]
         ?.getAttribute('href') || '').split(':').pop() || null;
 
-      // Multi-DRM: collect all ContentProtection/DRMSystemId pairs (§4.10)
+      // Multi-DRM: collect all ContentProtection/DRMSystemId pairs (A184r2 §4.10)
       let protection = null;
       const allSystems = {};
       for (const cp of inst.getElementsByTagNameNS(NS, 'ContentProtection')) {
@@ -590,7 +590,7 @@ function parseServiceList(doc) {
         if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage });
       }
 
-      // OtherDeliveryParameters — general extension framework (§4.6/4.6.5)
+      // OtherDeliveryParameters — general extension framework (A184r2 §4.6/4.6.5)
       // Resolve MIME type from extensionName/xsi:type attributes, then from child contentType
       const other = inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')[0];
       if (other) {
@@ -616,7 +616,7 @@ function parseServiceList(doc) {
         }
       }
 
-      // MulticastTSDeliveryParameters/IPMulticastAddress (§5.5.13)
+      // MulticastTSDeliveryParameters/IPMulticastAddress (TS 103 770 §5.5.13)
       const mc = inst.getElementsByTagNameNS(NS, 'MulticastTSDeliveryParameters')[0]
         || inst.getElementsByTagNameNS(NS, 'MulticastDeliveryParameters')[0];
       if (mc) {
@@ -635,13 +635,13 @@ function parseServiceList(doc) {
       }
     }
 
-    // TargetRegion — regionID (lowercase per §5.5.2); also accept uppercase for backward compat
+    // TargetRegion — regionID (lowercase per TS 103 770 §5.5.2); also accept uppercase for backward compat
     const trEl = svc.getElementsByTagNameNS(NS, 'TargetRegion')[0];
     const targetRegion = trEl
       ? (trEl.getAttribute('regionID') || trEl.getAttribute('RegionID') || trEl.textContent.trim() || null)
       : null;
 
-    // ContentGuideServiceRef is at Service level (§5.5.2); also check ServiceInstance for old XML
+    // ContentGuideServiceRef is at Service level (TS 103 770 §5.5.2); also check ServiceInstance for old XML
     let epgEndpoint     = listEpgEndpoint;
     let nowNextEndpoint = listNowNextEndpoint;
     const svcCgsRefEl = svc.getElementsByTagNameNS(NS, 'ContentGuideServiceRef')[0];
@@ -664,7 +664,7 @@ function parseServiceList(doc) {
       const period = availEl.getElementsByTagNameNS(NS, 'Period')[0];
       if (period) {
         const now   = Date.now();
-        // validFrom/validTo per §5.5.15; also accept old start/end attributes
+        // validFrom/validTo per TS 103 770 §5.5.15; also accept old start/end attributes
         const start = period.getAttribute('validFrom') || period.getAttribute('start');
         const end   = period.getAttribute('validTo')   || period.getAttribute('end');
         if (start) { availableFrom = start; if (now < new Date(start).getTime()) available = false; }
@@ -680,7 +680,7 @@ function parseServiceList(doc) {
     const restrictEl = svc.getElementsByTagNameNS(NS, 'ServiceRestriction')[0];
     const serviceRestriction = restrictEl ? (restrictEl.getAttribute('href') || '').split(':').pop() || null : null;
 
-    // AdditionalServiceParameters — store extension type/name for host integrations (§4.6, e.g. HbbTV DVBTriplet)
+    // AdditionalServiceParameters — store extension type/name for host integrations (A184r2 §4.6, e.g. HbbTV DVBTriplet)
     const aspEl = svc.getElementsByTagNameNS(NS, 'AdditionalServiceParameters')[0];
     const additionalServiceParams = aspEl ? {
       type: aspEl.getAttribute('xsi:type') || '',
@@ -702,7 +702,7 @@ function parseServiceList(doc) {
 
 // ── Load service list ─────────────────────────────────────────────────────────
 
-// Multi-URI fallback per §4.3.3.3-6: accepts a single URL or array of fallback URLs.
+// Multi-URI fallback per TS 103 770 §4.3.3.3-6: accepts a single URL or array of fallback URLs.
 async function loadServiceList(urlOrUrls) {
   const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
   const primaryUrl = urls[0];
@@ -1031,7 +1031,7 @@ function selectService(idx) {
     return;
   }
 
-  // Subscription gate — notify user before playing subscription/CA-only services (§4.3)
+  // Subscription gate — notify user before playing subscription/CA-only services (TS 103 770 §4.3)
   if (!subGateAcked.has(svc.uid) && (svc.subscriptionPackage || svc.serviceRestriction === 'subscription' || svc.serviceRestriction === 'conditionalAccess')) {
     showSubGate(svc.uid, () => selectService(idx));
     return;
@@ -1161,7 +1161,7 @@ function updateDeliveryBadge(delivery, instIdx, total) {
 
 // ── EPG loading ───────────────────────────────────────────────────────────────
 
-// nowNextCache: lightweight 1-2 event result from NowNextInfoEndpoint (§6.5.3.2)
+// nowNextCache: lightweight 1-2 event result from NowNextInfoEndpoint (TS 103 770 §6.5.3.2)
 // epgCache: full schedule from ScheduleInfoEndpoint — only loaded when EPG panel opens
 let nowNextCache = {};
 
@@ -1213,7 +1213,7 @@ async function loadServiceEPG(idx) {
 }
 
 async function loadAllEPG() {
-  // Use NowNextInfoEndpoint when available per §6.5.3.2 (cheaper than full schedule for channel list)
+  // Use NowNextInfoEndpoint when available per TS 103 770 §6.5.3.2 (cheaper than full schedule for channel list)
   await Promise.allSettled(services.map((svc, i) => {
     const ep = svc.nowNextEndpoint || svc.epgEndpoint;
     if (!ep) return Promise.resolve();
@@ -1262,7 +1262,7 @@ function startEPGRefresh() {
   }, 60000);
 }
 
-// ── Version polling with exponential back-off (§4.3.3.7) ─────────────────────
+// ── Version polling with exponential back-off (TS 103 770 §4.3.3.7) ─────────────────────
 
 const POLL_MAX_BACKOFF = 3600000; // cap at 1 hour
 
@@ -1459,7 +1459,7 @@ function refreshTracksPanel() {
     ? offBtn + text.map(t => `<button class="track-btn${t.current ? ' active' : ''}" aria-pressed="${t.current}" onclick="selectSubTrack(${t.idx})">${esc(t.label)}</button>`).join('')
     : '<span class="tracks-empty">No subtitle tracks detected</span>';
 
-  // Subtitle carriage note (§4.9) — shows how subtitles are delivered
+  // Subtitle carriage note (A184r2 §4.9) — shows how subtitles are delivered
   const inst = currentIdx >= 0 ? services[currentIdx]?.instances?.[currentInstIdx] : null;
   const carriage = inst?.subtitleCarriage;
   const CARRIAGE_LABELS = { '1': 'Application subtitles', '2': 'In MPEG-2 TS', '3': 'In-stream (ISOBMFF/DASH)', '4': 'Standalone resource', '5': 'Open / in-video', '99': 'Other' };
@@ -1526,7 +1526,7 @@ function parseSLRResponse(doc) {
   const NS = (root.namespaceURI || '').startsWith('urn:dvb:metadata:servicediscovery:')
     ? root.namespaceURI : 'urn:dvb:metadata:servicediscovery:2024';
 
-  // Group URIs by parent ServiceList element so multiple URIs = fallbacks for same list (§4.3.3.3-6)
+  // Group URIs by parent ServiceList element so multiple URIs = fallbacks for same list (TS 103 770 §4.3.3.3-6)
   const entries = [];
   const slEls = doc.getElementsByTagNameNS(NS, 'ServiceList');
   if (slEls.length) {
@@ -1644,7 +1644,7 @@ $('region-apply-btn').addEventListener('click', () => {
   // rebuildLCNs() re-sorts services in place, so remember the playing service and
   // recompute currentIdx by UID afterwards, else the UI desyncs from the active stream.
   const activeUid = currentIdx >= 0 ? services[currentIdx]?.uid : null;
-  if (!isCustomListActive) rebuildLCNs(); // reassign LCNs from region-matching LCNTable (§4.8)
+  if (!isCustomListActive) rebuildLCNs(); // reassign LCNs from region-matching LCNTable (A184r2 §4.8)
   if (activeUid) currentIdx = services.findIndex(s => s.uid === activeUid);
   renderChannelList();
   applyFilters();
@@ -1878,7 +1878,7 @@ function loadCustomList() {
   startEPGRefresh();
 }
 
-// ── Subscription gate (§4.3) ──────────────────────────────────────────────────
+// ── Subscription gate (TS 103 770 §4.3) ──────────────────────────────────────────────────
 
 function showSubGate(uid, onContinue) {
   const svc = services.find(s => s.uid === uid);
@@ -2138,7 +2138,7 @@ function positionBadgeTip(badge) {
   if (pCh)  window._pendingCh = parseInt(pCh, 10) || null;
 })();
 
-// Fixed-time nightly service list update (§4.11) — runs at 03:00 local time
+// Fixed-time nightly service list update (A184r2 §4.11) — runs at 03:00 local time
 function scheduleNightlyUpdate() {
   const now   = new Date();
   const next  = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 3, 0, 0, 0);

@@ -39,7 +39,7 @@ const DVBIEpg = (() => {
     const _ns = ns || NS;
     const pg  = pi.getElementsByTagNameNS(_ns, 'ParentalGuidance')[0];
     if (!pg) return null;
-    // mpeg7:MinimumAge per §6.10.15; namespace-agnostic via getElementsByTagName
+    // mpeg7:MinimumAge per TS 103 770 §6.10.15; namespace-agnostic via getElementsByTagName
     const age = pg.getElementsByTagName('MinimumAge')[0];
     if (age) return parseInt(age.textContent.trim(), 10) || null;
     const pr  = pg.getElementsByTagNameNS(_ns, 'ParentalRating')[0];
@@ -52,7 +52,7 @@ const DVBIEpg = (() => {
     const _rootNs = doc.documentElement?.namespaceURI || '';
     const ns = _rootNs.startsWith('urn:tva:metadata:') ? _rootNs : NS;
 
-    // Build series title map from GroupInformationTable (§6.10.17)
+    // Build series title map from GroupInformationTable (TS 103 770 §6.10.17)
     const seriesMap = {};
     for (const gi of doc.getElementsByTagNameNS(ns, 'GroupInformation')) {
       const gid   = gi.getAttribute('groupId');
@@ -70,7 +70,7 @@ const DVBIEpg = (() => {
         genre = gn ? gn.textContent.trim().toLowerCase() : (genreEl.getAttribute('href') || '').split(':').pop().toLowerCase() || null;
       }
 
-      // Series/episode from MemberOf (§6.10.17); fall back to flat elements for old XML
+      // Series/episode from MemberOf (TS 103 770 §6.10.17); fall back to flat elements for old XML
       let seriesNumber = null, episodeNumber = null, seriesTitle = null;
       const memberOf = bd.getElementsByTagNameNS(ns, 'MemberOf')[0];
       if (memberOf) {
@@ -100,7 +100,7 @@ const DVBIEpg = (() => {
       };
     }
 
-    // Catch-up: OnDemandProgram — check ProgramURL (§6.10.8.2) with locationURL as fallback
+    // Catch-up: OnDemandProgram — check ProgramURL (TS 103 770 §6.10.8.2) with locationURL as fallback
     const catchup = {};
     for (const od of doc.getElementsByTagNameNS(ns, 'OnDemandProgram')) {
       const crid = od.getElementsByTagNameNS(ns, 'Program')[0]?.getAttribute('crid') || '';
@@ -112,7 +112,7 @@ const DVBIEpg = (() => {
 
     function parseEvent(ev) {
       const crid   = ev.getElementsByTagNameNS(ns, 'Program')[0]?.getAttribute('crid') || '';
-      // Prefer ActualStartTime/ActualEndTime when present (§4.5); fall back to Published values
+      // Prefer ActualStartTime/ActualEndTime when present (A184r2 §4.5); fall back to Published values
       const actualStart = getText(ev, 'ActualStartTime', ns);
       const actualEnd   = getText(ev, 'ActualEndTime', ns);
       const start = new Date(actualStart || getText(ev, 'PublishedStartTime', ns));
@@ -152,7 +152,7 @@ const DVBIEpg = (() => {
   // would be silently dropped even if the guard let the request through.
   async function load(endpoint, serviceId) {
     if (!endpoint) return null;
-    // sid is the spec-compliant parameter (§6.5.2.2); serviceId kept for backward compat
+    // sid is the spec-compliant parameter (TS 103 770 §6.5.2.2); serviceId kept for backward compat
     const now = Math.floor(Date.now() / 1000);
     const params = new URLSearchParams({ sid: serviceId, serviceId, start: String(now - 3600), end: String(now + 12 * 3600) });
     const fullUrl = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${params.toString()}`;

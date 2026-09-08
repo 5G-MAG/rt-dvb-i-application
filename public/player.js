@@ -17,7 +17,7 @@ const DVBIPlayer = (() => {
     return _DRM_SYSTEMS[id.toLowerCase()] || id;
   }
 
-  // UUID v7 — 48-bit ms timestamp prefix + version 7 + random variant (CTA-5004 §3.1)
+  // UUID v7 — 48-bit ms timestamp prefix + version 7 + random variant (CTA-5004 TS 103 770 §3.1)
   function _uuidv7() {
     const ms  = Date.now();
     const buf = crypto.getRandomValues(new Uint8Array(16));
@@ -83,7 +83,7 @@ const DVBIPlayer = (() => {
     if (type === 'application/dash+xml') {
       try {
         const dp = dashjs.MediaPlayer().create();
-        // Multi-DRM: configure all available system/license pairs (§4.10)
+        // Multi-DRM: configure all available system/license pairs (A184r2 §4.10)
         if (protection) {
           const protData = {};
           if (protection.allSystems) {
@@ -135,7 +135,7 @@ const DVBIPlayer = (() => {
       const hlsCfg = { enableWorker: true, lowLatencyMode: false };
       // Multi-DRM: seed drmSystems from ALL systems. Do NOT gate on the primary's license
       // URL — the first-listed system may lack one while another carries the usable license
-      // (§4.10). Mirrors the DASH path above, which iterates allSystems directly.
+      // (A184r2 §4.10). Mirrors the DASH path above, which iterates allSystems directly.
       const drmSystems = {};
       if (protection?.allSystems) {
         for (const [sysId, licUrl] of Object.entries(protection.allSystems)) {
@@ -274,7 +274,7 @@ const DVBIPlayer = (() => {
     return null;
   }
 
-  // Network timeshift (§4.1.5) — true when live stream has a seekable DVR window
+  // Network timeshift (A184r2 §4.1.5) — true when live stream has a seekable DVR window
   function isLiveTimeshift() {
     if (_dash) {
       try {
