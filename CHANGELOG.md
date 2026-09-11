@@ -1,5 +1,16 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont. 5) — Dependency security fixes
+
+- **`body-parser` 1.20.5 to 1.20.8**, which carries a fixed `qs` 6.16.0 for its own use. Lockfile
+  only; the declared range already admitted it.
+- **Two moderate advisories remain open.** Express 4.22.2 pins `qs` to `~6.15.1` while the fix is
+  `qs` 6.16.0, and 4.22.2 is the last release of the 4.x line, so only Express 5 closes them. Both
+  concern query string parsing, which this server reaches on `/proxy`. They are left rather than
+  forced: `npm audit fix --force` would move a major version under a suite that has not run against
+  it.
+
+
 ## 2026-09 (cont. 4) — /proxy response size limit
 
 - **`/proxy` will not read an unbounded response into memory.** It fetched the upstream body in
