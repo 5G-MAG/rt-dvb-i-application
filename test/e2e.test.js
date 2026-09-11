@@ -153,3 +153,61 @@ test('broadcast-only service is listed with a badge and a clear selection messag
   const errorText = (await page.textContent('#play-error-msg')).trim();
   assert.match(errorText, /Broadcast-only service.*not available via broadband/);
 });
+
+// The registry is a distinct component of the DVB-I architecture (TS 103 770 V1.2.1 clause 4.1),
+// and its response format is not the one some deployed registries return. Both shapes are parsed,
+// so this checks the conformant one without losing the other.
+test('the registry lookup parses a conformant ServiceListEntryPoints document', { skip: !playwright }, async () => {
+  const conformant = `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceListEntryPoints xml:lang="en"
+  xmlns="urn:dvb:metadata:servicelistdiscovery:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023">
+  <ServiceListRegistryEntity><Name>Test Registry</Name></ServiceListRegistryEntity>
+  <ProviderOffering>
+    <Provider><Name>Test Provider</Name></Provider>
+    <ServiceListOffering>
+      <dvbisd-t:ServiceListName>Test List</dvbisd-t:ServiceListName>
+      <dvbisd-t:ServiceListURI contentType="application/xml">
+        <dvbisd-t:URI>https://example.com/a.xml</dvbisd-t:URI>
+      </dvbisd-t:ServiceListURI>
+      <dvbisd-t:ServiceListURI contentType="application/xml">
+        <dvbisd-t:URI>https://backup.example.com/a.xml</dvbisd-t:URI>
+      </dvbisd-t:ServiceListURI>
+      <dvbisd-t:Delivery><dvbisd-t:DASHDelivery/></dvbisd-t:Delivery>
+      <dvbisd-t:ServiceListId>tag:example.com,2026:list:a</dvbisd-t:ServiceListId>
+    </ServiceListOffering>
+  </ProviderOffering>
+</ServiceListEntryPoints>`;
+
+  const entries = await page.evaluate(xml => {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    return parseSLRResponse(doc);
+  }, conformant);
+
+  assert.ok(entries, 'a conformant registry response must be understood');
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].name, 'Test List');
+  assert.deepEqual(entries[0].urls,
+    ['https://example.com/a.xml', 'https://backup.example.com/a.xml'],
+    'both URIs of one offering are kept, as fallbacks for the same list');
+});
+
+test('the registry lookup still parses the older ProviderOffering shape', { skip: !playwright }, async () => {
+  const legacy = `<?xml version="1.0" encoding="UTF-8"?>
+<ProviderOffering xmlns="urn:dvb:metadata:servicediscovery:2024">
+  <ProviderName>Legacy Provider</ProviderName>
+  <ServiceList>
+    <ServiceListName>Legacy List</ServiceListName>
+    <ServiceListURI>https://legacy.example.com/list.xml</ServiceListURI>
+  </ServiceList>
+</ProviderOffering>`;
+
+  const entries = await page.evaluate(xml => {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    return parseSLRResponse(doc);
+  }, legacy);
+
+  assert.ok(entries, 'the shape deployed registries return must keep working');
+  assert.equal(entries[0].name, 'Legacy List');
+  assert.deepEqual(entries[0].urls, ['https://legacy.example.com/list.xml']);
+});

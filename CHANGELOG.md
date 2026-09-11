@@ -1,5 +1,19 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-09 (cont. 6) — Registry lookup: conformant responses, and a configurable endpoint
+
+- **A conformant registry response is now understood.** The lookup accepted only a
+  `ProviderOffering` root in the `servicediscovery` namespace, so a `ServiceListEntryPoints`
+  document, which is what ETSI TS 103 770 V1.2.1 clause 5.1.3.2 and its schema specify, was
+  rejected and then mistaken for a service list. Both shapes are parsed now, matching on local
+  name so the three namespaces a registry response spans all resolve.
+
+- **The registry endpoint is configurable.** It was hard-coded to a public third-party service.
+  Clause 5.1.3.2 names manufacturers, regulators, operators, a central registry and aggregators as
+  possible operators of one, so which to ask is a deployment choice. A settings field sets it,
+  remembered per browser, defaulting to the service it shipped with.
+
+
 ## 2026-09 (cont. 5) — Dependency security fixes
 
 - **`body-parser` 1.20.5 to 1.20.8**, which carries a fixed `qs` 6.16.0 for its own use. Lockfile

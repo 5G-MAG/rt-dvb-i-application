@@ -5,6 +5,7 @@ function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
+const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 const POLL_INTERVAL = 30000;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1515,10 +1516,52 @@ function autoSelectLang() {
 
 // ── SLR lookup ────────────────────────────────────────────────────────────────
 
+// Collect elements by local name in any namespace. A registry response spans three namespaces:
+// ServiceListEntryPoints and ProviderOffering are in servicelistdiscovery, while the children of
+// ServiceListOffering are in servicediscovery-types, because that element carries a type defined
+// in the other schema. Matching on local name keeps this working across all of them, and across
+// the namespace years a registry may still be publishing.
+function byLocalName(node, name) {
+  return Array.from(node.getElementsByTagNameNS('*', name));
+}
+
+// A conformant registry answers with ServiceListEntryPoints, as specified by TS 103 770 V1.2.1
+// clause 5.1.3.2 and the schema shipped with it: ProviderOffering* each holding ServiceListOffering*
+// with ServiceListName and ServiceListURI. Parsed here separately from the older shape below,
+// which some deployed registries return instead.
+function parseEntryPoints(doc) {
+  const entries = [];
+  for (const offering of byLocalName(doc, 'ServiceListOffering')) {
+    const urls = [];
+    const seen = new Set();
+    for (const uriEl of byLocalName(offering, 'ServiceListURI')) {
+      // ServiceListURI wraps the address in a URI child; older shapes put it in the text.
+      const inner = byLocalName(uriEl, 'URI')[0];
+      const url = (inner ? inner.textContent : uriEl.textContent).trim();
+      if (url && !seen.has(url)) { seen.add(url); urls.push(url); }
+    }
+    if (!urls.length) continue;
+    let name = (byLocalName(offering, 'ServiceListName')[0] || {}).textContent || '';
+    name = name.trim();
+    if (!name) {
+      // Fall back to the provider's name, which sits alongside the offerings rather than inside one.
+      let node = offering.parentElement;
+      while (node && !name) {
+        const provider = byLocalName(node, 'Provider')[0];
+        if (provider) name = (byLocalName(provider, 'Name')[0] || {}).textContent?.trim() || '';
+        node = node.parentElement;
+      }
+    }
+    entries.push({ name: name || urls[0], urls });
+  }
+  return entries.length ? entries : null;
+}
+
 function parseSLRResponse(doc) {
   const root = doc.documentElement;
   if (!root) return null;
   const localName = (root.localName || root.tagName).split(':').pop();
+  if (localName === 'ServiceListEntryPoints') return parseEntryPoints(doc);
   if (localName !== 'ProviderOffering') return null;
 
   // Detect the servicediscovery namespace from the root — registries may use 2019/2021, not just
@@ -1594,7 +1637,13 @@ function showSLRPicker(entries) {
 $('slr-load-btn').addEventListener('click', async () => {
   const cc = $('slr-input').value.trim().toUpperCase();
   if (!cc) return;
-  const registryUrl = `https://slrdb.org/dvbi/provider-offerings?TargetCountry=${encodeURIComponent(cc)}`;
+  // Which registry to ask is a deployment choice, not something to hard-code: a manufacturer, a
+  // regulator, an operator and a central registry are all named as possible operators in
+  // TS 103 770 V1.2.1 clause 5.1.3.2. The default keeps the public registry this shipped with.
+  const endpoint = ($('slr-endpoint').value || '').trim() || DEFAULT_REGISTRY;
+  localStorage.setItem('dvbi-slr-endpoint', endpoint);
+  const sep = endpoint.includes('?') ? '&' : '?';
+  const registryUrl = `${endpoint}${sep}TargetCountry=${encodeURIComponent(cc)}`;
   const resultsEl = $('slr-results');
   resultsEl.hidden = true;
   resultsEl.innerHTML = '';
@@ -2154,6 +2203,11 @@ function scheduleNightlyUpdate() {
 scheduleNightlyUpdate();
 updateCustomListCount();
 
+{
+  const saved = localStorage.getItem('dvbi-slr-endpoint');
+  const el = $('slr-endpoint');
+  if (el) el.value = saved || DEFAULT_REGISTRY;
+}
 urlInput.value = currentListUrl;
 loadServiceList(currentListUrl).then(() => {
   startEPGRefresh();
