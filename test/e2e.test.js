@@ -81,6 +81,14 @@ before(async () => {
   const opts = engine === 'chromium' && extraArgs.length ? { args: extraArgs } : {};
   browser = await playwright[engine].launch(opts);
   page = await browser.newPage();
+
+  // The suite is hermetic: everything not served by the test server above is aborted. The receiver
+  // pulls dash.js, hls.js and a web font from public CDNs, and those are <script> elements in the
+  // document head, so where they are unreachable the document never reaches DOMContentLoaded and
+  // page.goto times out however long it is given. Nothing asserted here needs a media player.
+  await page.route('**/*', route => {
+    route.request().url().startsWith(baseUrl) ? route.continue() : route.abort();
+  });
 });
 
 after(async () => {
@@ -89,12 +97,23 @@ after(async () => {
   if (server) await new Promise(r => server.close(r));
 });
 
+// Every goto waits for domcontentloaded, not networkidle. The receiver pulls dash.js, hls.js and a
+// web font from public CDNs; where those are unreachable the requests stay open for as long as the
+// environment takes to give up, so networkidle depends on the network rather than on the page being
+// ready. What each test actually needs is asserted below with an explicit wait.
+// Consequences of the deliberate abort above, not defects: the browser reports each blocked script
+// as a CORS failure and as an integrity mismatch. Anything mentioning an origin the page was never
+// allowed to reach is dropped; everything the receiver's own code raises is kept.
+const BLOCKED_ORIGINS = ['cdn.jsdelivr.net', 'cdn.dashjs.org', 'fonts.gstatic.com', 'fonts.googleapis.com'];
+const fromBlockedOrigin = text => BLOCKED_ORIGINS.some(h => text.includes(h));
+
 test('receiver loads a service list and renders channels from it', { skip: !playwright }, async () => {
   const consoleErrors = [];
-  page.on('pageerror', e => consoleErrors.push(String(e)));
-  page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
+  const collect = text => { if (!fromBlockedOrigin(text)) consoleErrors.push(text); };
+  page.on('pageerror', e => collect(String(e)));
+  page.on('console', msg => { if (msg.type() === 'error') collect(msg.text()); });
 
-  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'networkidle' });
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
 
   // Channel list should render all three services from the fixture (Alpha One, Beta Radio,
   // and Gamma TV — the last being broadcast-only/DVB-T with no IP delivery, listed rather
