@@ -6,6 +6,10 @@ function esc(s) {
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
 const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
+// Namespace of the LOCAL 5G delivery extension. Nothing in DVB defines it: TS 103 770 has no MBMS
+// delivery parameters, so the provider carries them in OtherDeliveryParameters under a 5G-MAG
+// namespace. See the provider's schemas/dvbi-5g-ext-1.0.xsd and its COMPLIANCE.md.
+const NS_DVBI_5G = 'urn:5g-mag:metadata:dvbi-5g:2026';
 const POLL_INTERVAL = 30000;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -539,6 +543,9 @@ function parseServiceList(doc) {
 
     const instances = [];
     let hasBroadcastDelivery = false;
+    // Set when any instance carries the local 5G extension above, so the service can be shown as
+    // reachable over 5G broadcast AND marked as relying on a non-DVB extension.
+    let mbms5g = null;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
       const priority = parseInt(inst.getAttribute('priority') || '99', 10);
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
@@ -589,6 +596,23 @@ function parseServiceList(doc) {
         const url = uriText(dash); // URI may be dvbisd-t:URI (types ns) or legacy <URI>
         const origSource = dash.getElementsByTagNameNS('*', 'OriginalDeliverySource')[0]?.textContent.trim() || null;
         if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage });
+      }
+
+      // The local 5G extension, recognised by its own namespace so a document that does not use it
+      // is unaffected. It yields no playable instance: a browser cannot join an MBMS bearer, so the
+      // unicast fallback the extension names is what actually plays.
+      if (!mbms5g) {
+        const ext5g = [...inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')]
+          .find(e => e.getElementsByTagNameNS(NS_DVBI_5G, 'ServiceLocator')[0]);
+        if (ext5g) {
+          const pick = n => ext5g.getElementsByTagNameNS(NS_DVBI_5G, n)[0]?.textContent.trim() || null;
+          mbms5g = {
+            locator:      pick('ServiceLocator'),
+            serviceClass: pick('ServiceClass'),
+            fallback:     pick('UnicastFallback'),
+            extensionName: ext5g.getAttribute('extensionName') || null,
+          };
+        }
       }
 
       // OtherDeliveryParameters — general extension framework (A184r2 §4.6/4.6.5)
@@ -694,7 +718,7 @@ function parseServiceList(doc) {
     const instanceCount = svc.getElementsByTagNameNS(NS, 'ServiceInstance').length;
     const noIpDelivery = instances.length === 0 && instanceCount > 0;
     if (displayName && (instances.length || noIpDelivery)) {
-      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, available, availableFrom, availableTo, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery });
+      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, available, availableFrom, availableTo, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g });
     }
   }
 
@@ -886,9 +910,15 @@ function renderChannelList() {
           ? `<span class="ch-badge ch-badge-sub" data-tooltip="${svc.serviceRestriction === 'subscription' ? 'Subscription required' : 'Conditional access required'}">${svc.serviceRestriction === 'subscription' ? 'SUB' : 'CA'}</span>` : '');
     const unavailableTag = svc.available === false ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
     const broadcastTag = svc.noIpDelivery
-      ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : 'No playable delivery method listed for this service'}">Broadcast only</span>`
+      ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : svc.mbms5g ? '5G broadcast (MBMS) only — a browser cannot join an MBMS bearer' : 'No playable delivery method listed for this service'}">${svc.hasBroadcastDelivery || !svc.mbms5g ? 'Broadcast only' : '5G only'}</span>`
+      : '';
+    // Marked distinctly from the DVB-defined badges: this one says the document uses an extension
+    // that no DVB specification defines, which a reader must be able to see at a glance.
+    const ext5gTag = svc.mbms5g
+      ? `<span class="ch-badge ch-badge-5g" data-tooltip="5G broadcast (MBMS) delivery, carried in a LOCAL extension (${esc(svc.mbms5g.extensionName || NS_DVBI_5G)}) — not defined by any DVB specification. Playback here uses the unicast fallback.">5G ext</span>`
       : '';
     const badges = [
+      ext5gTag,
       hasAD    ? '<span class="ch-badge ch-badge-ad"  data-tooltip="Audio Description: narration for visually impaired viewers">AD</span>'  : '',
       hasHoH   ? '<span class="ch-badge ch-badge-hoh" data-tooltip="Hard of Hearing: subtitles with sound effects and speaker labels">HoH</span>' : '',
       isMCOnly ? '<span class="ch-badge ch-badge-mc"  data-tooltip="Multicast delivery only — not playable in a browser">MC</span>' : '',
@@ -1027,7 +1057,9 @@ function selectService(idx) {
     playError.hidden = false;
     playErrorMsg.textContent = svc.hasBroadcastDelivery
       ? 'Broadcast-only service (DVB-T/S/C) — not available via broadband in this browser'
-      : 'No playable delivery method listed for this service';
+      : svc.mbms5g
+        ? '5G broadcast (MBMS) only, signalled through a local extension that no DVB specification defines — a browser cannot join an MBMS bearer, and this service lists no unicast fallback'
+        : 'No playable delivery method listed for this service';
     loadServiceEPG(idx);
     return;
   }

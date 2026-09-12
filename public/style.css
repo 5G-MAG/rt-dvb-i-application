@@ -878,3 +878,7 @@ kbd {
 
 /* Small inline count hint in settings labels */
 .settings-hint { font-size: 0.75rem; color: var(--text-3); font-weight: 400; margin-left: 0.3em; }
+
+/* Local, non-DVB extension. Deliberately a different hue from the DVB-defined badges so a reader
+   can tell at a glance that this service relies on something no DVB specification defines. */
+.ch-badge-5g      { background: rgba(255,159,10,0.14); color: #ffb340; border: 1px dashed rgba(255,159,10,0.55); }

@@ -44,6 +44,21 @@ PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the rest.
 
+## The local 5G broadcast extension
+
+A service list may carry service instances delivered over 5G broadcast (MBMS). **No DVB
+specification defines that signalling.** It arrives as `OtherDeliveryParameters` with an `xsi:type`
+from the 5G-MAG namespace `urn:5g-mag:metadata:dvbi-5g:2026`, which the provider repository defines
+in `schemas/dvbi-5g-ext-1.0.xsd`.
+
+This receiver understands it and says so plainly: affected services get a dashed **5G ext** badge
+whose tooltip names the extension and states that it is local, and a service reachable *only* over
+5G shows "5G only" with a message explaining that a browser cannot join an MBMS bearer. Playback,
+where it happens, uses the unicast fallback the extension names or another instance of the service.
+
+A receiver that did not know the namespace would simply find no delivery parameters it understands
+on that instance and move on, which is the intended behaviour.
+
 ## Development
 
 ```bash

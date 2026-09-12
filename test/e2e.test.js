@@ -49,6 +49,54 @@ function fixtureEpgXml() {
 </TVAMain>`;
 }
 
+// A service list carrying the LOCAL 5G delivery extension the provider emits (namespace
+// urn:5g-mag:metadata:dvbi-5g:2026, see the provider's schemas/dvbi-5g-ext-1.0.xsd). Nothing in
+// TS 103 770 defines MBMS delivery parameters, so the receiver must both understand the extension
+// and make plain to the viewer that it is not DVB-defined. Two services: one hybrid (5G broadcast
+// with a DASH unicast instance that actually plays), one 5G-only (nothing playable in a browser).
+function fixture5gXml(base) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList
+  xmlns="urn:dvb:metadata:servicediscovery:2024"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:dvbi5g="urn:5g-mag:metadata:dvbi-5g:2026"
+  id="tag:dvbi.example,2024:servicelist:5g" version="1" xml:lang="en">
+  <Name>5G Extension List</Name>
+  <ProviderName>Sample Provider</ProviderName>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:hybrid</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DisplayName>Hybrid 5G</DisplayName>
+      <OtherDeliveryParameters extensionName="urn:5g-mag:dvbi-5g:mbms" xsi:type="dvbi5g:MBMSDeliveryParametersType">
+        <dvbi5g:ServiceLocator>urn:3gpp:mbms:service:hybrid</dvbi5g:ServiceLocator>
+        <dvbi5g:ServiceClass>urn:dvb:metadata:serviceClass:DVB-I_Service_Instance:1</dvbi5g:ServiceClass>
+        <dvbi5g:UnicastFallback>${base}/dash/hybrid.mpd</dvbi5g:UnicastFallback>
+      </OtherDeliveryParameters>
+    </ServiceInstance>
+    <ServiceInstance priority="2">
+      <DisplayName>Hybrid 5G</DisplayName>
+      <DASHDeliveryParameters>
+        <UriBasedLocation contentLinkType="application/dash+xml"><URI>${base}/dash/hybrid.mpd</URI></UriBasedLocation>
+      </DASHDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>Hybrid 5G</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:5gonly</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DisplayName>Only 5G</DisplayName>
+      <OtherDeliveryParameters extensionName="urn:5g-mag:dvbi-5g:mbms" xsi:type="dvbi5g:MBMSDeliveryParametersType">
+        <dvbi5g:ServiceLocator>urn:3gpp:mbms:service:only</dvbi5g:ServiceLocator>
+        <dvbi5g:ServiceClass>urn:dvb:metadata:serviceClass:DVB-I_Service_Instance:1</dvbi5g:ServiceClass>
+      </OtherDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>Only 5G</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+</ServiceList>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -66,6 +114,7 @@ before(async () => {
   app.get('/service-list.xml', (req, res) => res.type('application/xml').send(rawXml));
   app.get('/epg/schedule', (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/epg/nownext',  (req, res) => res.type('application/xml').send(fixtureEpgXml()));
+  app.get('/service-list-5g.xml', (req, res) => res.type('application/xml').send(fixture5gXml(baseUrl)));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
   // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
@@ -229,4 +278,30 @@ test('the registry lookup still parses the older ProviderOffering shape', { skip
   assert.ok(entries, 'the shape deployed registries return must keep working');
   assert.equal(entries[0].name, 'Legacy List');
   assert.deepEqual(entries[0].urls, ['https://legacy.example.com/list.xml']);
+});
+
+// The 5G delivery extension is local, not DVB-defined, so a viewer must be able to see both that
+// the service reaches them over 5G broadcast and that this rests on an extension no DVB
+// specification carries. Checks the badge on both the hybrid service (which still plays, over its
+// unicast instance) and the 5G-only one (which cannot play in a browser and must say why).
+// Runs last: it navigates away from the main fixture list.
+test('services using the local 5G extension are badged as an extension', { skip: !playwright }, async () => {
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-5g.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+
+  const hybrid = page.locator('.ch-card:has(.ch-name:text("Hybrid 5G"))');
+  const badge = hybrid.locator('.ch-badge-5g');
+  assert.equal((await badge.textContent()).trim(), '5G ext');
+  const tip = await badge.getAttribute('data-tooltip');
+  assert.match(tip, /LOCAL extension/, 'the badge must say the extension is local, not DVB-defined');
+  assert.match(tip, /urn:5g-mag:dvbi-5g:mbms/, 'the badge must name the extension');
+  // The hybrid service still has a playable unicast instance, so it is not marked as undeliverable.
+  assert.equal(await hybrid.evaluate(el => el.classList.contains('no-delivery')), false);
+
+  const only = page.locator('.ch-card:has(.ch-name:text("Only 5G"))');
+  assert.ok(await only.locator('.ch-badge-5g').count(), 'the 5G-only service carries the extension badge too');
+  assert.equal((await only.locator('.ch-badge-mc').textContent()).trim(), '5G only');
+  await only.click();
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  assert.match((await page.textContent('#play-error-msg')).trim(), /5G broadcast \(MBMS\) only/);
 });
