@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Guide 404 handling for every ContentGuideSource endpoint (TS 103 770 V1.2.1 clause 4.3.3.4)
+
+- **A 404 from the ProgramInfo, GroupInfo or MoreEpisodes endpoint re-acquires the service list**,
+  as one from the schedule endpoint already did; a 404 again on the same request after that backs
+  off.
+
 ## 2026-10 — No error for an XML AIT without an executable application (TS 103 770 V1.2.1 clause 5.2.4.2)
 
 - **The toolbar application is offered only once it has been resolved**: an XML AIT is read first,

@@ -20,7 +20,7 @@ const http = require('http');
 const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl, plainServer;
-const hits = { cg404List: 0, cg404Guide: 0, playlist: 0, registryQuery: '' };
+const hits = { cg404List: 0, cg404Guide: 0, playlist: 0, registryQuery: '', guideGoneList: 0 };
 const cgRequests = [];
 let playwright;
 try { playwright = require('playwright'); }
@@ -267,13 +267,15 @@ function fixtureRegistryXml(base, { regulatorDvbs = false } = {}) {
 // Content guide sources by the precedence of clause 6.1: "Own" has its own ContentGuideSource,
 // "Ref" a ContentGuideSourceRef into the ContentGuideSourceList and a ContentGuideServiceRef,
 // "Top" neither, so the list-level ContentGuideSource applies.
-function fixtureGuideListXml(base) {
+// With gone, the ProgramInfo, GroupInfo and MoreEpisodes endpoints of "Top" answer 404.
+function fixtureGuideListXml(base, { gone = false } = {}) {
   const cgs = (id, path, extra = '') => `<ContentGuideSource CGSID="${id}"><ProviderName>CG</ProviderName>
       <ScheduleInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/${path}/schedule</dvbisd-t:URI></ScheduleInfoEndpoint>${extra}</ContentGuideSource>`;
+  const ep = name => gone ? `${base}/cg/gone-${name}` : `${base}/cg/top/${name}`;
   const full = `
-      <ProgramInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/program</dvbisd-t:URI></ProgramInfoEndpoint>
-      <GroupInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/group/</dvbisd-t:URI></GroupInfoEndpoint>
-      <MoreEpisodesEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/more</dvbisd-t:URI></MoreEpisodesEndpoint>`;
+      <ProgramInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${ep('program')}</dvbisd-t:URI></ProgramInfoEndpoint>
+      <GroupInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${ep('group/')}</dvbisd-t:URI></GroupInfoEndpoint>
+      <MoreEpisodesEndpoint contentType="application/xml"><dvbisd-t:URI>${ep('more')}</dvbisd-t:URI></MoreEpisodesEndpoint>`;
   const service = (uid, name, guide) => `
   <Service version="1">
     <UniqueIdentifier>tag:g,2026:${uid}</UniqueIdentifier>
@@ -426,6 +428,10 @@ before(async () => {
   app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
   // Content guide server written from clause 6 (see fixtureGuide below).
   app.get('/service-list-guide.xml', (req, res) => res.type('application/xml').send(fixtureGuideListXml(baseUrl)));
+  app.get('/service-list-guide-gone.xml', (req, res) => {
+    hits.guideGoneList++;
+    res.type('application/xml').send(fixtureGuideListXml(baseUrl, { gone: true }));
+  });
   app.get(/^\/cg\/(.*)$/, (req, res) => fixtureGuide(req, res, baseUrl));
   app.get('/service-list-playlist.xml', (req, res) => res.type('application/xml').send(fixturePlaylistListXml(baseUrl)));
   app.get('/playlists/:name.xml', (req, res) => {
@@ -1032,6 +1038,58 @@ test('box sets: categories, lists filtered by Template XML AIT, contents', { ski
   await page.click('#browse-back');
   await page.waitForSelector('#browse-list .browse-item:has-text("Playable Box")', { timeout: 5000 });
   await page.click('#browse-close');
+});
+
+// Clause 4.3.3.4: "any API URL listed in the ContentGuideSource object", so ProgramInfo, GroupInfo and
+// MoreEpisodes too: a 404 re-acquires the service list once; a 404 again after that backs off.
+test('a 404 from the ProgramInfo, GroupInfo or MoreEpisodes endpoint re-acquires the list once, then backs off', { skip: !playwright }, async () => {
+  hits.guideGoneList = 0;
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-guide-gone.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Top")', { timeout: 10000 });
+  const settle = async (want) => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && hits.guideGoneList < want) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 500));
+    return hits.guideGoneList;
+  };
+  const selectTop = async () => {
+    await page.click('.ch-card:has(.ch-name:text-is("Top"))');
+    await page.waitForSelector('#tb-boxset-btn:not([hidden])', { timeout: 5000 });
+  };
+  const count = prefix => cgRequests.filter(u => u.startsWith(prefix)).length;
+  cgRequests.length = 0;
+
+  // GroupInfo
+  await selectTop();
+  await page.click('#tb-boxset-btn');
+  assert.equal(await settle(2), 2, 'a GroupInfo 404 re-acquires the service list');
+  await page.evaluate(() => closeBrowsePanel());
+  await selectTop();
+  await page.click('#tb-boxset-btn');
+  await page.waitForFunction(() => document.querySelector('#browse-list')?.textContent.includes('Not available'), null, { timeout: 5000 });
+  assert.equal(await settle(3), 2, 'a 404 again after the re-acquisition does not re-acquire it again');
+  assert.equal(count('/cg/gone-group/categories'), 2);
+  await page.evaluate(() => closeBrowsePanel());
+
+  // ProgramInfo, as selecting a programme in the EPG asks for it.
+  const programInfo = () => page.evaluate(() => { closeEPGPanel(); onEventSelected({ crid: 'crid://g/now' }, document.createElement('div')); });
+  await selectTop();
+  await programInfo();
+  assert.equal(await settle(3), 3, 'a ProgramInfo 404 re-acquires the service list');
+  await selectTop();
+  await programInfo();
+  assert.equal(await settle(4), 3, 'and a 404 again after it does not');
+  assert.equal(count('/cg/gone-program?pid=crid%3A%2F%2Fg%2Fnow'), 2);
+
+  // MoreEpisodes
+  await selectTop();
+  await page.evaluate(() => { closeEPGPanel(); openMoreEpisodes('crid://g/past'); });
+  assert.equal(await settle(4), 4, 'a MoreEpisodes 404 re-acquires the service list');
+  await selectTop();
+  await page.evaluate(() => { closeEPGPanel(); openMoreEpisodes('crid://g/past'); });
+  assert.equal(await settle(5), 4, 'and a 404 again after it does not');
+  assert.equal(count('/cg/gone-more?pid='), 2);
+  await page.evaluate(() => closeBrowsePanel());
 });
 
 // DVB-I Playlists, TS 103 770 V1.2.1 clauses 5.2.7 and 5.7.1.

@@ -1580,10 +1580,12 @@ function updateDeliveryBadge(delivery, instIdx, total) {
 // ── EPG loading ───────────────────────────────────────────────────────────────
 
 // Guide requests through the shared HTTP client, to the service's source (clause 6.1) with its
-// guide service identifier (clause 6.5.2.2). A 404 from a ContentGuideSource URL makes the client
-// re-acquire the service list, to re-acquire the ContentGuideSource; a 404 again after that backs
-// the request off (TS 103 770 V1.2.1 clause 4.3.3.4).
-const guideReacquired = new Set(); // endpoint|sid of requests that already caused a re-acquisition
+// guide service identifier (clause 6.5.2.2). A 404 from any ContentGuideSource URL (schedule and
+// now/next, ProgramInfo, GroupInfo, MoreEpisodes) makes the client re-acquire the service list, to
+// re-acquire the ContentGuideSource; a 404 again after that backs the request off (TS 103 770 V1.2.1
+// clause 4.3.3.4). Schedule requests are keyed by endpoint and service, since their URLs move with
+// the time window; the others by their URL.
+const guideReacquired = new Set(); // keys of requests that already caused a re-acquisition
 let reacquiring = null;
 
 // A saved custom-list entry from before sources were resolved carries only epgEndpoint.
@@ -1592,8 +1594,7 @@ function guideOf(svc) {
 }
 function sidOf(svc) { return svc.guideSid || svc.uid; }
 
-function guideOutcome(r, endpoint, sid) {
-  const key = `${endpoint}|${sid}`;
+function guideOutcome(r, key = r.url) {
   if (r.result && r.result.ok) { guideReacquired.delete(key); return; }
   if (r.result && r.result.status === 404 && !r.result.skipped) {
     if (guideReacquired.has(key)) {
@@ -1611,7 +1612,7 @@ async function guideNowNext(svc, windowType = 'true') {
   const g = guideOf(svc);
   if (!g) return null;
   const r = await DVBIEpg.loadNowNext(g.schedule, sidOf(svc), dvbiHttp, windowType);
-  guideOutcome(r, g.schedule, sidOf(svc));
+  guideOutcome(r, `${g.schedule}|${sidOf(svc)}`);
   if (r.events) checkOnDemand(r.events);
   return r.events;
 }
@@ -1623,7 +1624,7 @@ async function guideSchedule(svc) {
   if (!g) return null;
   const now = Date.now();
   const r = await DVBIEpg.loadSchedule(g.schedule, sidOf(svc), dvbiHttp, now - 3600000, now + 12 * 3600000);
-  guideOutcome(r, g.schedule, sidOf(svc));
+  guideOutcome(r, `${g.schedule}|${sidOf(svc)}`);
   if (r.events) checkOnDemand(r.events);
   return r.events;
 }
@@ -1800,7 +1801,9 @@ function onEventSelected(ev, detailEl) {
   const svc = services[currentIdx];
   const g = svc && guideOf(svc);
   if (!g || !g.program || !ev.crid) return;
-  DVBIEpg.loadProgram(g.program, ev.crid, dvbiHttp).then(({ info }) => {
+  DVBIEpg.loadProgram(g.program, ev.crid, dvbiHttp).then(r => {
+    guideOutcome(r);
+    const { info } = r;
     if (!info || !detailEl.isConnected) return;
     const syn = detailEl.querySelector('.epg-detail-synopsis');
     if (info.synopsis && syn) syn.textContent = info.synopsis;
@@ -1860,7 +1863,9 @@ function showBrowse(view, back = false) {
 // display (clause 6.9): on request, or at once when a page leaves nothing to show.
 async function loadBrowsePage(view, url, append) {
   const svc = services[currentIdx];
-  const { results } = await DVBIEpg.loadResults(url, dvbiHttp);
+  const r = await DVBIEpg.loadResults(url, dvbiHttp);
+  guideOutcome(r);
+  const { results } = r;
   if (view !== browseView) return;
   if (!append) browseList.innerHTML = '';
   if (!results) { browseList.innerHTML = '<div class="epg-empty" style="padding:1rem">Not available</div>'; browseMore.hidden = true; return; }
