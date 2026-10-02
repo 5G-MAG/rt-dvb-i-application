@@ -30,14 +30,33 @@ test('table 83 NOTE 2: a regulator list is the default choice', () => {
   assert.deepEqual(list.map(o => o.isDefault), [true, false, false]);
 });
 
-test('an offering that cannot be installed is never the default, even a regulator\'s', () => {
+// Table 83 NOTE 2: whenever the response includes a regulator list, the default is one, even when
+// this client cannot install it; it keeps its problem so that the picker can say why.
+test('table 83 NOTE 2: a regulator list stays the default even when it cannot be installed', () => {
   const list = D.arrange([
+    offering('ok'),
     offering('reg', { regulatorListFlag: true, delivery: withDelivery({ dvbs: [{ required: true }] }) }),
+  ]);
+  assert.equal(list[0].name, 'reg');
+  assert.equal(list[0].isDefault, true);
+  assert.match(list[0].problem, /DVB-S/);
+  assert.equal(list[1].isDefault, false);
+
+  const two = D.arrange([
+    offering('reg-dvbt', { regulatorListFlag: true, delivery: withDelivery({ dvbt: [{ required: true }] }) }),
+    offering('ok'),
+    offering('reg-ok', { regulatorListFlag: true }),
+  ]);
+  assert.deepEqual(two.map(o => o.name), ['reg-ok', 'reg-dvbt', 'ok'], 'an installable regulator list is preferred');
+  assert.deepEqual(two.map(o => o.isDefault), [true, false, false]);
+});
+
+test('without a regulator list the first installable offering is the default', () => {
+  const list = D.arrange([
+    offering('dvbs', { delivery: withDelivery({ dvbs: [{ required: true }] }) }),
     offering('ok'),
   ]);
-  assert.equal(list[0].name, 'ok');
-  assert.equal(list[0].isDefault, true);
-  assert.match(list[1].problem, /DVB-S/);
+  assert.deepEqual(list.map(o => [o.name, o.isDefault]), [['ok', true], ['dvbs', false]]);
 });
 
 test('table 83 TargetCountry and Language are acted on', () => {

@@ -107,6 +107,7 @@ html, body {
 .version-row { font-size: 0.68rem; color: var(--text-3); margin-top: 2px; }
 
 .settings-hint-warn { font-size: 0.72rem; color: #ff9f0a; margin-top: 0.15rem; margin-bottom: 0.2rem; }
+.slr-problem { display: block; margin: 0.15rem 0 0; }
 .tls-warn { padding: 0.4rem 0.85rem; margin: 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 
 #slr-results { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.25rem; }

@@ -1,5 +1,12 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — A regulator list is always the default (TS 103 770 V1.2.1 table 83 NOTE 2)
+
+- **When a registry response includes a list with `@regulatorListFlag`, a regulator list is the
+  default**, even when this client cannot install it: it stays marked as the default, disabled,
+  with the reason shown under its name. An installable regulator list is preferred over one that
+  is not; the other lists can still be chosen.
+
 ## 2026-10 — Plain HTTP with a warning (TS 103 770 V1.2.1 clause 7.3)
 
 - **An `http://` service list, registry or content guide is fetched, with a warning**, instead of

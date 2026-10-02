@@ -231,7 +231,8 @@ ${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' : a('te
 
 // A registry response (clause 5.3) with a plain list, a regulator's list, a list that requires DVB-T,
 // and a list whose ServiceListId differs from the list's @id.
-function fixtureRegistryXml(base) {
+// With regulatorDvbs, the regulator's list requires DVB-S, which this client cannot receive.
+function fixtureRegistryXml(base, { regulatorDvbs = false } = {}) {
   const offering = (name, uri, id, { flag = false, delivery = '<dvbisd-t:DASHDelivery/>', extra = '' } = {}) => `
     <ServiceListOffering${flag ? ' regulatorListFlag="true"' : ''}>
       <dvbisd-t:ServiceListName>${name}</dvbisd-t:ServiceListName>
@@ -251,7 +252,8 @@ function fixtureRegistryXml(base) {
   </ProviderOffering>
   <ProviderOffering>
     <Provider regulatorFlag="true"><Name>Regulator</Name></Provider>${
-    offering('Regulator List', `${base}/service-list-handling.xml`, 'tag:h,2026:list', { flag: true, extra: '<dvbisd-t:Language>en</dvbisd-t:Language><dvbisd-t:TargetCountry>GBR</dvbisd-t:TargetCountry>' })}
+    offering('Regulator List', `${base}/service-list-handling.xml`, 'tag:h,2026:list', { flag: true,
+      ...(regulatorDvbs ? { delivery: '<dvbisd-t:DVBSDelivery required="true"/>' } : {}), extra: '<dvbisd-t:Language>en</dvbisd-t:Language><dvbisd-t:TargetCountry>GBR</dvbisd-t:TargetCountry>' })}
   </ProviderOffering>
 </ServiceListEntryPoints>`;
 }
@@ -429,6 +431,7 @@ before(async () => {
 </Playlist>`);
   });
   app.get('/registry', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl)));
+  app.get('/registry-reg-dvbs', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl, { regulatorDvbs: true })));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
@@ -815,13 +818,13 @@ test('a content finished image is shown when the VoD has played out', { skip: !p
 });
 
 // Service list discovery, TS 103 770 V1.2.1 clause 8.5.3.2 and clause 5.3.
-async function registryLookup() {
+async function registryLookup(registryPath = '/registry') {
   await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => localStorage.clear());
   await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.ch-name', { timeout: 10000 });
   await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); });
-  await page.fill('#slr-endpoint', `${baseUrl}/registry`);
+  await page.fill('#slr-endpoint', `${baseUrl}${registryPath}`);
   await page.fill('#slr-input', 'GBR');
   await page.click('#slr-load-btn');
   await page.waitForSelector('#slr-results:not([hidden]) .preset-btn', { timeout: 5000 });
@@ -842,6 +845,18 @@ test('the registry picker offers the regulator\'s list as the default and holds 
 
   await page.click('#slr-results .preset-btn.active');
   await page.waitForSelector('#list-name:text("Handling List")', { timeout: 5000 });
+});
+
+// Table 83 NOTE 2: the default is a regulator list whenever the response has one, even one this
+// client cannot install; the picker says why it cannot be installed.
+test('a regulator list that cannot be installed stays the default, with the reason shown', { skip: !playwright }, async () => {
+  const buttons = await registryLookup('/registry-reg-dvbs');
+  assert.ok(buttons[0].text.startsWith('Regulator List (default · regulator list'), buttons[0].text);
+  assert.equal(buttons[0].active, true, 'the regulator list is marked as the default');
+  assert.equal(buttons[0].disabled, true, 'and is not installed');
+  assert.match(buttons[0].text, /Cannot be installed here: requires DVB-S, which this client cannot receive/);
+  assert.equal(buttons.filter(b => b.active).length, 1, 'no other list is marked as the default');
+  assert.equal(buttons.find(b => b.text.startsWith('Plain List')).disabled, false, 'the others can still be chosen');
 });
 
 test('a list whose @id differs from the registry\'s ServiceListId is treated as an error', { skip: !playwright }, async () => {

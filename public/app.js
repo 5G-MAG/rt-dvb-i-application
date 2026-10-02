@@ -2371,7 +2371,9 @@ function parseSLRResponse(doc) {
 }
 
 // Offerings in the order DVBIDiscovery.arrange gives: the default (a regulator's list where there is
-// one) first and focused; offerings this client should not install are shown, disabled, with why.
+// one) first, marked, and focused when it can be installed; offerings this client should not install
+// are shown, disabled, with why, the default included (table 83 NOTE 2 keeps a regulator list the
+// default even then).
 function showSLRPicker(entries, registry) {
   const container = $('slr-results');
   container.innerHTML = '';
@@ -2395,7 +2397,8 @@ function showSLRPicker(entries, registry) {
       (entry.targetCountries || []).length ? (entry.targetCountries || []).join(', ') : '',
     ].filter(Boolean);
     btn.innerHTML = `${entry.logo ? `<img src="${esc(entry.logo)}" alt="" style="height:1em;vertical-align:middle;margin-right:0.3em" onerror="this.remove()"/>` : ''}` +
-      `${esc(entry.name)}${tags.length ? ` <span class="settings-hint">(${esc(tags.join(' · '))})</span>` : ''}`;
+      `${esc(entry.name)}${tags.length ? ` <span class="settings-hint">(${esc(tags.join(' · '))})</span>` : ''}` +
+      `${entry.problem && entry.isDefault ? `<span class="settings-hint-warn slr-problem">Cannot be installed here: ${esc(entry.problem)}</span>` : ''}`;
     btn.title = entry.problem ? `Not installed: ${entry.problem}` : entry.urls.join(' → ');
     if (entry.problem) {
       btn.disabled = true;
@@ -2413,7 +2416,7 @@ function showSLRPicker(entries, registry) {
     container.appendChild(btn);
   }
   container.hidden = false;
-  if (defaultBtn) defaultBtn.focus();
+  if (defaultBtn && !defaultBtn.disabled) defaultBtn.focus();
 }
 
 $('slr-load-btn').addEventListener('click', async () => {

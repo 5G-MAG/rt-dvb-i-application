@@ -61,8 +61,10 @@ const DVBIDiscovery = (() => {
   // @regulatorListFlag set to true then DVB-I clients shall either i) select a Service List with
   // @regulatorListFlag set to true or ii) offer the user a choice of Service Lists where the default
   // option is a Service List with @regulatorListFlag set to true." This client takes ii): regulator
-  // lists first and the first installable one the default; then lists in the preferred audio
-  // language; otherwise registry order. Offerings for another country are given a problem.
+  // lists first, and whenever there is one the default is a regulator list, the first installable
+  // one or, when none can be installed here, the first one with its problem; then installable
+  // lists before the rest, lists in the preferred audio language, otherwise registry order.
+  // Offerings for another country are given a problem.
   function arrange(offerings, { country = null, lang = '' } = {}) {
     const rated = offerings.map((o, i) => {
       let problem = deliveryProblem(o.delivery);
@@ -70,12 +72,13 @@ const DVBIDiscovery = (() => {
       return { ...o, problem, order: i };
     });
     rated.sort((a, b) =>
-      (!!a.problem - !!b.problem)
-      || (!!b.regulatorListFlag - !!a.regulatorListFlag)
+      (!!b.regulatorListFlag - !!a.regulatorListFlag)
+      || (!!a.problem - !!b.problem)
       || (speaks(b, lang) - speaks(a, lang))
       || (a.order - b.order));
-    const firstOk = rated.find(o => !o.problem);
-    return rated.map(o => ({ ...o, isDefault: o === firstOk }));
+    const regulatorDefault = rated.find(o => o.regulatorListFlag);
+    const theDefault = regulatorDefault || rated.find(o => !o.problem);
+    return rated.map(o => ({ ...o, isDefault: o === theDefault }));
   }
 
   // Table 12, ServiceListId: "If the ServiceList@id does not match the
