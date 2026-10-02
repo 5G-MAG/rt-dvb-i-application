@@ -49,8 +49,8 @@ Built against **ETSI TS 103 770 V1.2.1 (2024-09)**, a version rather than a rele
 Clause-by-clause coverage, and what is still absent, is recorded on the project page rather than
 here: <https://www.5g-mag.com/reference-tools/dvb-i>
 
-The 5G broadcast signalling this client also understands is a local extension, not part of
-TS 103 770; see [The local 5G broadcast extension](#the-local-5g-broadcast-extension) below.
+For 5G Broadcast it checks and shows the `mbms://` signalling rather than playing it; see
+[5G Broadcast instances](#5g-broadcast-instances) below.
 
 ## Downloading
 
@@ -87,20 +87,20 @@ The server is configured through environment variables: `PORT` (default `5000`),
 for native HTTPS. [DEPLOYMENT.md](DEPLOYMENT.md) gives each one with its default, and describes
 HTTPS, the proxy guard and the pinned player libraries.
 
-## The local 5G broadcast extension
+## 5G Broadcast instances
 
-A service list may carry service instances delivered over 5G broadcast (MBMS). **No DVB
-specification defines that signalling.** It arrives as `OtherDeliveryParameters` with an `xsi:type`
-from the 5G-MAG namespace `urn:5g-mag:metadata:dvbi-5g:2026`, which the provider repository defines
-in `schemas/dvbi-5g-ext-1.0.xsd`.
+A service list may carry service instances delivered over 5G Broadcast (MBMS), as
+`IdentifierBasedDeliveryParameters` holding an `mbms://` locator. ETSI TS 103 770 V1.2.1 clause
+9.3.3 has the client pass that locator to an MBMS Client; a browser has no MBMS Client, so this one
+checks the signalling and shows it instead:
 
-This receiver understands it and says so plainly: affected services get a dashed **5G ext** badge
-whose tooltip names the extension and states that it is local, and a service reachable *only* over
-5G shows "5G only" with a message explaining that a browser cannot join an MBMS bearer. Playback,
-where it happens, uses the unicast fallback the extension names or another instance of the service.
+- a **5G** badge whose tooltip gives the locator, its priority and the MBMS User Service it names
+  (the part before the first `&`, ETSI TS 126 347 clause 8.2.2);
+- a red **5G** badge saying what is wrong when the locator is not an MBMS URL by that clause;
+- "5G only", with a message, when the service lists no other instance. Otherwise another instance of
+  the service plays.
 
-A receiver that did not know the namespace would simply find no delivery parameters it understands
-on that instance and move on, which is the intended behaviour.
+The check is `public/mbms-url.js`, tested by `test/mbms-url.test.js`.
 
 ## Development
 

@@ -6,10 +6,6 @@ function esc(s) {
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
 const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
-// Namespace of the LOCAL 5G delivery extension. Nothing in DVB defines it: TS 103 770 has no MBMS
-// delivery parameters, so the provider carries them in OtherDeliveryParameters under a 5G-MAG
-// namespace. See the provider's schemas/dvbi-5g-ext-1.0.xsd and its COMPLIANCE.md.
-const NS_DVBI_5G = 'urn:5g-mag:metadata:dvbi-5g:2026';
 const POLL_INTERVAL = 30000;
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -543,8 +539,8 @@ function parseServiceList(doc) {
 
     const instances = [];
     let hasBroadcastDelivery = false;
-    // Set when any instance carries the local 5G extension above, so the service can be shown as
-    // reachable over 5G broadcast AND marked as relying on a non-DVB extension.
+    // Set when an instance carries an mbms:// locator, so the service can be shown as offered over
+    // 5G Broadcast and its signalling checked (see mbms-url.js).
     let mbms5g = null;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
       const priority = parseInt(inst.getAttribute('priority') || '99', 10);
@@ -598,19 +594,17 @@ function parseServiceList(doc) {
         if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage });
       }
 
-      // The local 5G extension, recognised by its own namespace so a document that does not use it
-      // is unaffected. It yields no playable instance: a browser cannot join an MBMS bearer, so the
-      // unicast fallback the extension names is what actually plays.
+      // 5G Broadcast: IdentifierBasedDeliveryParameters holding an mbms:// locator, which TS 103 770
+      // V1.2.1 clause 9.3.3 has the client hand to an MBMS Client. A browser has none, so this yields
+      // no playable instance; the locator is checked and shown, and another instance plays if listed.
       if (!mbms5g) {
-        const ext5g = [...inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')]
-          .find(e => e.getElementsByTagNameNS(NS_DVBI_5G, 'ServiceLocator')[0]);
-        if (ext5g) {
-          const pick = n => ext5g.getElementsByTagNameNS(NS_DVBI_5G, n)[0]?.textContent.trim() || null;
+        const idEl = inst.getElementsByTagNameNS(NS, 'IdentifierBasedDeliveryParameters')[0];
+        const locator = idEl?.textContent.trim() || '';
+        if (/^mbms:/i.test(locator)) {
           mbms5g = {
-            locator:      pick('ServiceLocator'),
-            serviceClass: pick('ServiceClass'),
-            fallback:     pick('UnicastFallback'),
-            extensionName: ext5g.getAttribute('extensionName') || null,
+            locator, priority,
+            problem:   DVBIMbmsUrl.problem(locator),
+            serviceId: DVBIMbmsUrl.serviceId(locator),
           };
         }
       }
@@ -910,12 +904,17 @@ function renderChannelList() {
           ? `<span class="ch-badge ch-badge-sub" data-tooltip="${svc.serviceRestriction === 'subscription' ? 'Subscription required' : 'Conditional access required'}">${svc.serviceRestriction === 'subscription' ? 'SUB' : 'CA'}</span>` : '');
     const unavailableTag = svc.available === false ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
     const broadcastTag = svc.noIpDelivery
-      ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : svc.mbms5g ? '5G broadcast (MBMS) only — a browser cannot join an MBMS bearer' : 'No playable delivery method listed for this service'}">${svc.hasBroadcastDelivery || !svc.mbms5g ? 'Broadcast only' : '5G only'}</span>`
+      ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : svc.mbms5g ? '5G Broadcast only — a browser cannot reach an MBMS Client' : 'No playable delivery method listed for this service'}">${svc.hasBroadcastDelivery || !svc.mbms5g ? 'Broadcast only' : '5G only'}</span>`
       : '';
-    // Marked distinctly from the DVB-defined badges: this one says the document uses an extension
-    // that no DVB specification defines, which a reader must be able to see at a glance.
-    const ext5gTag = svc.mbms5g
-      ? `<span class="ch-badge ch-badge-5g" data-tooltip="5G broadcast (MBMS) delivery, carried in a LOCAL extension (${esc(svc.mbms5g.extensionName || NS_DVBI_5G)}) — not defined by any DVB specification. Playback here uses the unicast fallback.">5G ext</span>`
+    // Shows the 5G Broadcast signalling and whether it is well formed, since this client can check it
+    // but not receive it.
+    const m5 = svc.mbms5g;
+    const ext5gTag = m5
+      ? `<span class="ch-badge ch-badge-5g${m5.problem ? ' ch-badge-5g-bad' : ''}" data-tooltip="${esc(m5.problem
+          ? `5G Broadcast signalling is wrong: ${m5.locator} is ${m5.problem} (TS 26.347 clause 8.2.2).`
+          : `5G Broadcast, priority ${m5.priority}: ${m5.locator}, MBMS User Service ${m5.serviceId}. ` +
+            `This browser cannot reach an MBMS Client; ` +
+            (svc.instances.length ? 'it plays another instance of this service.' : 'no other instance is listed.'))}">5G</span>`
       : '';
     const badges = [
       ext5gTag,
@@ -1058,7 +1057,9 @@ function selectService(idx) {
     playErrorMsg.textContent = svc.hasBroadcastDelivery
       ? 'Broadcast-only service (DVB-T/S/C) — not available via broadband in this browser'
       : svc.mbms5g
-        ? '5G broadcast (MBMS) only, signalled through a local extension that no DVB specification defines — a browser cannot join an MBMS bearer, and this service lists no unicast fallback'
+        ? (svc.mbms5g.problem
+            ? `5G Broadcast only, and its signalling is wrong: ${svc.mbms5g.locator} is ${svc.mbms5g.problem}`
+            : '5G Broadcast only — a browser cannot reach an MBMS Client, and this service lists no other instance')
         : 'No playable delivery method listed for this service';
     loadServiceEPG(idx);
     return;

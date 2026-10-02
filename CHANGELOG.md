@@ -1,5 +1,15 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — 5G Broadcast signalling checked, local extension dropped
+
+- **5G Broadcast is read from `IdentifierBasedDeliveryParameters`** holding an `mbms://` locator, as
+  the provider now emits it, instead of the 5G-MAG extension `urn:5g-mag:metadata:dvbi-5g:2026`.
+- **The locator is checked** against 3GPP TS 26.347 V18.1.0 clause 8.2.2 (`public/mbms-url.js`), and
+  the 5G badge shows it, its priority and its MBMS User Service, or says what is wrong.
+- **The texts no longer claim a unicast fallback is played.** The extension's `UnicastFallback` was
+  read and never used while the tooltip and the 5G-only message said otherwise; a unicast copy is
+  now simply another instance of the service.
+
 ## 2026-09 (cont. 6) — Registry lookup: conformant responses, and a configurable endpoint
 
 - **A conformant registry response is now understood.** The lookup accepted only a

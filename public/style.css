@@ -881,4 +881,5 @@ kbd {
 
 /* Local, non-DVB extension. Deliberately a different hue from the DVB-defined badges so a reader
    can tell at a glance that this service relies on something no DVB specification defines. */
-.ch-badge-5g      { background: rgba(255,159,10,0.14); color: #ffb340; border: 1px dashed rgba(255,159,10,0.55); }
+.ch-badge-5g      { background: rgba(255,159,10,0.14); color: #ffb340; border: 1px solid rgba(255,159,10,0.55); }
+.ch-badge-5g-bad  { background: rgba(255,69,58,0.14); color: #ff6961; border: 1px dashed rgba(255,69,58,0.6); }
