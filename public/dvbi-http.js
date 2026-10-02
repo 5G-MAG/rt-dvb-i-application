@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // HTTP behaviour towards DVB-I endpoints, ETSI TS 103 770 V1.2.1 clause 4.3 (and clause 6.2.3 and
 // 6.2.4, which refer to it for content guide requests).
 //

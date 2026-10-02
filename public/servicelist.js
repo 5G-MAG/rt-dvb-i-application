@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // Service list handling rules of ETSI TS 103 770 V1.2.1 that this client applies after parsing:
 // channel numbers (clauses 5.5.10 to 5.5.12 and 5.5.29), service regions (table 15), subscription
 // packages (clause 5.1.5, table 16), service parental rating (clause 5.5.28), linked application

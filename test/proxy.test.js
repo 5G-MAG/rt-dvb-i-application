@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // The /proxy endpoint fetches a URL on the browser's behalf, so its address guard is the thing
 // standing between this receiver and being used to reach whatever the host can reach. These cases
 // pin the guard's behaviour, including the allowlist that makes local testing possible without

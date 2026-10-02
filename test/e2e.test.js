@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // Browser E2E smoke test using Playwright (raw API, not @playwright/test, to keep the toolchain
 // uniform with the rest of the suite — assertions still go through node:test).
 // Serves the receiver itself (server.js: public/ and /proxy) plus compliant fixture service lists on

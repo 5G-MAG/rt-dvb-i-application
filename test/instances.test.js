@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // Service instance precedence, ETSI TS 103 770 V1.2.1 clause 5.2.13, and scheduled service hours,
 // clauses 5.2.5.2 and 5.5.15 (public/instances.js).
 const { test } = require('node:test');

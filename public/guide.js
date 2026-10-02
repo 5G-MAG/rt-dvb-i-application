@@ -1,3 +1,12 @@
+/*
+License: 5G-MAG Public License (v1.0)
+Authors: Jordi J. Gimenez (5G-MAG)
+Copyright: (C) 2026 5G-MAG Association
+
+For full license terms please see the LICENSE file distributed with this
+program. If this file is missing then the license can be retrieved from
+https://www.5g-mag.com/license
+*/
 // Content guide requests of ETSI TS 103 770 V1.2.1 clause 6: which source a service uses (clause
 // 6.1), the request URLs (clauses 6.5 to 6.8, encoded as clause 6.2.2 says), and the contextual
 // parameters of an XML AIT request (clause 5.2.4.4.6). Pure functions.
