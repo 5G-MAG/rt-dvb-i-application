@@ -2,6 +2,7 @@
   "name": "rt-dvb-i-application",
   "version": "1.0.0",
   "description": "DVB-I Client \u2014 browser-based DVB-I service list player with CORS proxy",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
