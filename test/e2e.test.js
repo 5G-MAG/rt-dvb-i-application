@@ -153,14 +153,17 @@ after(async () => {
 // Consequences of the deliberate abort above, not defects: the browser reports each blocked script
 // as a CORS failure and as an integrity mismatch. Anything mentioning an origin the page was never
 // allowed to reach is dropped; everything the receiver's own code raises is kept.
-const BLOCKED_ORIGINS = ['cdn.jsdelivr.net', 'cdn.dashjs.org', 'fonts.gstatic.com', 'fonts.googleapis.com'];
-const fromBlockedOrigin = text => BLOCKED_ORIGINS.some(h => text.includes(h));
+// Chromium reports a blocked request as "Failed to load resource: net::ERR_FAILED", with the URL only in
+// the message's location, so the location is checked as well as the text. The fixture's logos sit on
+// example.com, which is blocked the same way.
+const BLOCKED_ORIGINS = ['cdn.jsdelivr.net', 'cdn.dashjs.org', 'fonts.gstatic.com', 'fonts.googleapis.com', 'example.com'];
+const fromBlockedOrigin = (text, url = '') => BLOCKED_ORIGINS.some(h => text.includes(h) || url.includes(h));
 
 test('receiver loads a service list and renders channels from it', { skip: !playwright }, async () => {
   const consoleErrors = [];
-  const collect = text => { if (!fromBlockedOrigin(text)) consoleErrors.push(text); };
+  const collect = (text, url) => { if (!fromBlockedOrigin(text, url)) consoleErrors.push(text); };
   page.on('pageerror', e => collect(String(e)));
-  page.on('console', msg => { if (msg.type() === 'error') collect(msg.text()); });
+  page.on('console', msg => { if (msg.type() === 'error') collect(msg.text(), msg.location().url); });
 
   await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
 
