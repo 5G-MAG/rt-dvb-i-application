@@ -2,11 +2,17 @@
 // standing between this receiver and being used to reach whatever the host can reach. These cases
 // pin the guard's behaviour, including the allowlist that makes local testing possible without
 // switching it off.
-process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
-// A fixed port so it can be named in the allowlist, which is read when server.js is required.
+// Warnings are logged so that the clause 7.3 warning can be checked; log lines are captured below
+// rather than printed.
+process.env.LOG_LEVEL = 'warn';
+const logLines = [];
+console.log = (...args) => { logLines.push(args.join(' ')); };
+// Fixed ports so they can be named in the allowlist, which is read when server.js is required.
 const UPSTREAM_PORT = 45997;
+const PLAIN_PORT = 45996;
 process.env.PROXY_ALLOW_ORIGINS =
-  `http://localhost:4000, http://127.0.0.1:4000/, https://127.0.0.1:${UPSTREAM_PORT}, http://127.0.0.1:${UPSTREAM_PORT}`;
+  `http://localhost:4000, http://127.0.0.1:4000/, https://127.0.0.1:${UPSTREAM_PORT}, http://127.0.0.1:${UPSTREAM_PORT}, ` +
+  `http://127.0.0.1:${PLAIN_PORT}`;
 // The upstreams below use a throwaway self-signed certificate (tls-fixture.js); the proxy's fetch
 // in this test process accepts it. Certificate checking itself is not what these tests are about.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -15,9 +21,10 @@ process.env.PROXY_MAX_BYTES = String(64 * 1024);
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const https = require('node:https');
+const http = require('node:http');
 const { makeCertificate } = require('./tls-fixture.js');
 const TLS = makeCertificate();
-const { app, assertSafeUrl, isPrivateIp, isRfc1918, onSamePrivateSubnet, assertTlsOrSameSubnet } = require('../server.js');
+const { app, assertSafeUrl, isPrivateIp, isRfc1918, onSamePrivateSubnet, plainHttpWarning } = require('../server.js');
 
 async function allowed(url) {
   try { await assertSafeUrl(url); return true; } catch { return false; }
@@ -158,7 +165,7 @@ test('RFC 1918 clause 3 blocks are the private subnets, loopback is not one', ()
   }
 });
 
-test('plain HTTP is allowed only to an address on one of this host\'s private subnets', async () => {
+test('plain HTTP is warned about, saying whether the endpoint is on this host\'s private subnet', async () => {
   const ifaces = {
     lo:   [{ family: 'IPv4', address: '127.0.0.1', cidr: '127.0.0.1/8' }],
     eth0: [{ family: 'IPv4', address: '192.168.1.20', cidr: '192.168.1.20/24' }],
@@ -168,22 +175,60 @@ test('plain HTTP is allowed only to an address on one of this host\'s private su
   assert.equal(onSamePrivateSubnet('127.0.0.1', ifaces), false, 'loopback is not an RFC 1918 subnet');
   assert.equal(onSamePrivateSubnet('10.0.0.5', ifaces), false, 'no interface on 10/8');
 
-  await assert.doesNotReject(assertTlsOrSameSubnet('http://192.168.1.99:4000/list.xml', ifaces));
-  await assert.rejects(assertTlsOrSameSubnet('http://192.168.2.99:4000/list.xml', ifaces), /clause 7\.3/);
-  await assert.rejects(assertTlsOrSameSubnet('http://127.0.0.1:4000/list.xml', ifaces), /clause 7\.3/);
-  await assert.doesNotReject(assertTlsOrSameSubnet('https://127.0.0.1:4000/list.xml', ifaces));
+  const exception = 'For the specific case that a DVB-I client connects to a DVB-I metadata endpoint located ' +
+                    'on the same private subnet (see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS.';
+  const same = await plainHttpWarning('http://192.168.1.99:4000/list.xml', ifaces);
+  assert.equal(same.samePrivateSubnet, true);
+  assert.ok(same.msg.includes('not over TLS') && same.msg.includes('clause 7.3') && same.msg.includes(exception));
+  const loop = await plainHttpWarning('http://127.0.0.1:4000/list.xml', ifaces);
+  assert.equal(loop.samePrivateSubnet, false);
+  assert.match(loop.msg, /exception does not apply/);
+  assert.equal((await plainHttpWarning('http://192.168.2.99:4000/list.xml', ifaces)).samePrivateSubnet, false);
+  assert.equal(await plainHttpWarning('https://127.0.0.1:4000/list.xml', ifaces), null, 'https is not warned about');
 });
 
-test('the proxy refuses an http:// endpoint off the private subnet, even an allowlisted one', async () => {
+// Owner decision: an http:// endpoint is fetched, with a logged warning, and every other proxy check
+// still applies (here the allowlist, without which loopback stays refused).
+test('the proxy fetches an http:// endpoint and logs that it is not over TLS, redirect hops included', async (t) => {
+  const plain = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end('<?xml version="1.0"?><ServiceList/>');
+  });
+  const secure = https.createServer(TLS, (req, res) => {
+    res.writeHead(302, { Location: `http://127.0.0.1:${PLAIN_PORT}/list.xml` });
+    res.end();
+  });
+  try {
+    await new Promise((ok, err) => { plain.once('error', err); plain.listen(PLAIN_PORT, '127.0.0.1', ok); });
+    await new Promise((ok, err) => { secure.once('error', err); secure.listen(UPSTREAM_PORT, '127.0.0.1', ok); });
+  } catch {
+    plain.close(); secure.close();
+    t.skip(`port ${PLAIN_PORT} or ${UPSTREAM_PORT} is in use`);
+    return;
+  }
   const server = app.listen(0);
   await new Promise(r => server.once('listening', r));
+  const via = u => fetch(`http://127.0.0.1:${server.address().port}/proxy?url=${encodeURIComponent(u)}`);
+  const warnings = () => logLines.map(l => { try { return JSON.parse(l); } catch { return {}; } })
+    .filter(l => l.level === 'warn' && /not over TLS/.test(l.msg || ''));
   try {
-    const res = await fetch(`http://127.0.0.1:${server.address().port}/proxy?url=` +
-                            encodeURIComponent('http://127.0.0.1:4000/service-list.xml'));
-    assert.equal(res.status, 400);
-    assert.match((await res.json()).error, /clause 7\.3/);
+    logLines.length = 0;
+    const direct = await via(`http://127.0.0.1:${PLAIN_PORT}/list.xml`);
+    assert.equal(direct.status, 200, 'plain HTTP is fetched');
+    assert.match(await direct.text(), /<ServiceList\/>/);
+    assert.equal(warnings().length, 1, 'one warning for the one plain HTTP hop');
+    assert.match(warnings()[0].msg, /clause 7\.3/);
+    assert.equal(warnings()[0].samePrivateSubnet, false, 'loopback is not on an RFC 1918 subnet');
+
+    logLines.length = 0;
+    const redirected = await via(`https://127.0.0.1:${UPSTREAM_PORT}/to-http`);
+    assert.equal(redirected.status, 200, 'a redirect to plain HTTP is followed');
+    assert.equal(warnings().length, 1, 'the https hop is not warned about, the http hop is');
+
+    const refused = await via('http://127.0.0.1:22/');
+    assert.equal(refused.status, 400, 'the address guard still refuses a loopback origin not allowlisted');
   } finally {
-    server.close();
+    server.close(); plain.close(); secure.close();
   }
 });
 
@@ -200,9 +245,6 @@ test('the proxy forwards conditional request headers and caching and retry heade
       res.end('<?xml version="1.0"?><ServiceList/>');
     } else if (req.url === '/auth') {
       res.writeHead(401, { 'Retry-After': '120' });
-      res.end();
-    } else if (req.url === '/to-http') {
-      res.writeHead(302, { Location: `http://127.0.0.1:${UPSTREAM_PORT}/list.xml` });
       res.end();
     } else {
       res.writeHead(404); res.end();
@@ -233,10 +275,6 @@ test('the proxy forwards conditional request headers and caching and retry heade
     const auth = await via('/auth');
     assert.equal(auth.status, 401);
     assert.equal(auth.headers.get('retry-after'), '120');
-
-    const redirected = await via('/to-http');
-    assert.equal(redirected.status, 502, 'a redirect to plain HTTP off the private subnet is not followed');
-    assert.match((await redirected.json()).error, /clause 7\.3/);
   } finally {
     server.close();
     upstream.close();

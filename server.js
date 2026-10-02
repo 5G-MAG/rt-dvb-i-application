@@ -114,13 +114,14 @@ async function assertSafeUrl(rawUrl) {
 
 // ── HTTP over TLS (ETSI TS 103 770 V1.2.1 clause 7.3) ─────────────────────────────────────────
 // "All HTTP transactions and connections between the DVB-I client and DVB-I metadata endpoints
-// [...] shall be performed using HTTP over TLS", except: "For the specific case that a DVB-I client
-// connects to a DVB-I metadata endpoint located on the same private subnet (see clause 3 of IETF
-// RFC 1918 [27]), HTTP may be used without TLS." This server makes those connections for the
-// browser, so it is the side that can tell which subnet it is on. An http:// endpoint is fetched
-// only when every address it resolves to lies in one of the three RFC 1918 clause 3 blocks and in
-// the subnet of one of this host's own interfaces. Loopback (127.0.0.0/8) is not one of those
-// blocks, so http://localhost is refused: use https, or the host's private address.
+// [...] shall be performed using HTTP over TLS", except PRIVATE_SUBNET_EXCEPTION below. This server
+// makes those connections for the browser. An http:// endpoint is fetched, and every plain HTTP hop
+// is logged as a warning that quotes the exception and says whether every address the endpoint
+// resolves to lies in one of the three RFC 1918 clause 3 blocks and in the subnet of one of this
+// host's own interfaces. Loopback (127.0.0.0/8) is not one of those blocks. The browser shows the
+// same warning beside the service list (public/app.js, showTlsWarning).
+const PRIVATE_SUBNET_EXCEPTION = 'For the specific case that a DVB-I client connects to a DVB-I metadata ' +
+  'endpoint located on the same private subnet (see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS.';
 const RFC1918_BLOCKS = [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16]];
 
 function ipv4ToInt(ip) {
@@ -153,15 +154,27 @@ function onSamePrivateSubnet(ip, interfaces = os.networkInterfaces()) {
   return false;
 }
 
-async function assertTlsOrSameSubnet(rawUrl, interfaces) {
+// For an http:// URL, the warning logged before it is fetched: the request is not over TLS, with
+// whether the clause 7.3 exception covers the endpoint. null for any other scheme.
+async function plainHttpWarning(rawUrl, interfaces) {
   const u = new URL(rawUrl);
-  if (u.protocol !== 'http:') return u; // https passes; other schemes are refused by assertSafeUrl
-  const addrs = await resolveHost(u);
-  if (!addrs.length || !addrs.every(a => onSamePrivateSubnet(a, interfaces))) {
-    throw new Error(`${u.origin} is plain HTTP and not on this host's private subnet; ` +
-                    'TS 103 770 clause 7.3 requires HTTP over TLS (https://)');
-  }
-  return u;
+  if (u.protocol !== 'http:') return null;
+  let addrs = [];
+  try { addrs = await resolveHost(u); } catch { /* reported by the fetch itself */ }
+  const samePrivateSubnet = addrs.length > 0 && addrs.every(a => onSamePrivateSubnet(a, interfaces));
+  return {
+    msg: `${u.origin} is fetched with plain HTTP, not over TLS. ETSI TS 103 770 V1.2.1 clause 7.3 ` +
+         `requires HTTP over TLS except: "${PRIVATE_SUBNET_EXCEPTION}" ` +
+         (samePrivateSubnet ? 'Every address of this endpoint is on this host\'s private subnet.'
+                            : 'This endpoint is not on this host\'s private subnet, so the exception does not apply.'),
+    url: u.href,
+    samePrivateSubnet,
+  };
+}
+
+async function warnIfPlainHttp(rawUrl) {
+  const w = await plainHttpWarning(rawUrl);
+  if (w) logger.warn(w.msg, { url: w.url, samePrivateSubnet: w.samePrivateSubnet });
 }
 
 // Read a response body with a ceiling on it. Without one, this endpoint reads whatever the
@@ -196,8 +209,8 @@ async function readCapped(response) {
 const FORWARD_REQUEST_HEADERS  = ['if-modified-since'];
 const FORWARD_RESPONSE_HEADERS = ['last-modified', 'cache-control', 'retry-after', 'expires'];
 
-// Redirects are followed here rather than by fetch, so that every hop passes the same address and
-// TLS checks as the first. The limit is the one fetch applies itself (WHATWG Fetch, HTTP-redirect
+// Redirects are followed here rather than by fetch, so that every hop passes the same address
+// check as the first, and a hop to plain HTTP is logged. The limit is the one fetch applies itself (WHATWG Fetch, HTTP-redirect
 // fetch: "If request's redirect count is 20, then return a network error.").
 const REDIRECT_LIMIT = 20;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -205,8 +218,8 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 async function fetchChecked(url, headers) {
   let current = url;
   for (let hop = 0; ; hop++) {
-    await assertTlsOrSameSubnet(current);
     await assertSafeUrl(current);
+    await warnIfPlainHttp(current);
     const upstream = await fetch(current, { headers, redirect: 'manual' });
     const location = upstream.headers.get('location');
     if (!REDIRECT_STATUSES.has(upstream.status) || !location) return upstream;
@@ -220,7 +233,6 @@ app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
   try {
-    await assertTlsOrSameSubnet(url);
     await assertSafeUrl(url);
   } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
   const headers = { 'User-Agent': 'DVBIReceiver/1.0', Accept: 'application/xml,*/*' };
@@ -283,4 +295,4 @@ function startServer() {
 
 if (require.main === module) startServer();
 
-module.exports = { app, startServer, isPrivateIp, assertSafeUrl, isRfc1918, onSamePrivateSubnet, assertTlsOrSameSubnet };
+module.exports = { app, startServer, isPrivateIp, assertSafeUrl, isRfc1918, onSamePrivateSubnet, plainHttpWarning };

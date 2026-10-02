@@ -1,5 +1,16 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Plain HTTP with a warning (TS 103 770 V1.2.1 clause 7.3)
+
+- **An `http://` service list, registry or content guide is fetched, with a warning**, instead of
+  being refused off the private subnet. The server logs a warning for every plain HTTP request it
+  makes, and the page shows one under the list name when the service list itself is plain HTTP;
+  both say the request is not over TLS and quote the clause 7.3 exception for an endpoint on the
+  same private subnet, and the log says whether the endpoint is on one of the host's private subnets. The
+  address guard, the allowlist and the other proxy checks are unchanged.
+- **The default list is `http://localhost:4000/service-list.xml` again**, the provider's default.
+- Same-origin requests are made directly again, whatever the scheme.
+
 ## 2026-10 — DVB-I Playlists (TS 103 770 V1.2.1 clauses 5.2.7 and 5.7)
 
 - **A `DASHDeliveryParameters` location with `@contentType="application/xml"` is a Playlist**: it

@@ -66,26 +66,29 @@ npm install
 npm start           # http://localhost:5000
 ```
 
-By default it loads `https://localhost:4000/service-list.xml`, which is where the provider serves one
-when it runs with HTTPS. To use a different list, open settings and set the URL, or pass it in the
-query string:
+By default it loads `http://localhost:4000/service-list.xml`, which is where the provider serves one
+when it runs without a certificate, its default. To use a different list, open settings and set the
+URL, or pass it in the query string:
 
 ```
-http://localhost:5000/?url=https://localhost:4000/service-list.xml
+http://localhost:5000/?url=http://localhost:4000/service-list.xml
 ```
 
-**Service lists, registries and content guides are fetched over HTTPS.** ETSI TS 103 770 V1.2.1
-clause 7.3 allows plain HTTP only to an endpoint on the client's own private subnet (the address
-blocks of IETF RFC 1918 clause 3), so an `http://` URL is fetched only when every address it
-resolves to is on the subnet of one of this server's network interfaces. Loopback is not such a
-subnet: `http://localhost:4000` is refused, and the list shows the reason. Run the provider with
-HTTPS (its `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH`), or address it by this machine's private address.
+**Plain HTTP is loaded with a warning.** ETSI TS 103 770 V1.2.1 clause 7.3 requires HTTP over TLS to
+service list registries, service list servers and content guide servers, except: "For the specific
+case that a DVB-I client connects to a DVB-I metadata endpoint located on the same private subnet
+(see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS." An `http://` service list is
+still loaded, and a warning under the list name says it is not over TLS and quotes that exception.
+The proxy logs the same warning for every plain HTTP request it makes, redirect hops included, and
+says whether every address of the endpoint is on one of this server's private subnets. Use
+`https://` to meet the clause outside a private subnet.
 
 **A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
 private and loopback addresses, which is where a local provider sits, so name its origin explicitly.
-A self-signed certificate on the provider is trusted through Node.js's `NODE_EXTRA_CA_CERTS`:
+A self-signed certificate on an HTTPS provider is trusted through Node.js's `NODE_EXTRA_CA_CERTS`:
 
 ```bash
+PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
 PROXY_ALLOW_ORIGINS="https://localhost:4000,https://127.0.0.1:4000" \
 NODE_EXTRA_CA_CERTS=/path/to/provider-cert.pem npm start
 ```

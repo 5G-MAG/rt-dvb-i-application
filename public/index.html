@@ -52,6 +52,7 @@
       <button class="theme-btn" id="theme-btn" title="Toggle light/dark theme">☀</button>
       <button class="settings-btn" id="settings-btn" title="Settings (S)">⚙</button>
     </div>
+    <div id="tls-warn" class="settings-hint-warn tls-warn" role="status" hidden></div>
 
     <div class="settings-panel" id="settings-panel">
       <label class="settings-label">Service list URL</label>
@@ -60,7 +61,7 @@
         <button class="url-load-btn" id="url-load-btn">Load</button>
       </div>
       <div class="presets">
-        <button class="preset-btn" data-url="https://localhost:4000/service-list.xml">Demo</button>
+        <button class="preset-btn" data-url="http://localhost:4000/service-list.xml">Demo</button>
         <button class="preset-btn" data-url="https://dvbi-rest.dtv.fi/services_r4/DVBI(epg)">dtv.fi</button>
         <button class="preset-btn" data-url="https://raw.githubusercontent.com/DVBproject/dvbi-api-demos/main/service-lists/dvbi-sample.xml">DVB Sample</button>
       </div>

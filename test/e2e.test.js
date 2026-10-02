@@ -3,18 +3,23 @@
 // Serves the receiver itself (server.js: public/ and /proxy) plus compliant fixture service lists on
 // one ephemeral HTTPS port (same-origin) so the test exercises real parsing/rendering without
 // weakening the SSRF guard on /proxy (which correctly blocks localhost — see server.js isPrivateIp).
-// HTTPS because TS 103 770 V1.2.1 clause 7.3 has the client refuse plain HTTP to a metadata endpoint
-// that is not on its private subnet, which loopback is not; the certificate is a throwaway one.
+// HTTPS because TS 103 770 V1.2.1 clause 7.3 requires HTTP over TLS to a metadata endpoint that is not
+// on the client's private subnet, which loopback is not; the certificate is a throwaway one.
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
+// A plain HTTP origin for the clause 7.3 warning test, allowlisted so the proxy's address guard
+// lets it through; read when server.js is required.
+const PLAIN_PORT = 45995;
+process.env.PROXY_ALLOW_ORIGINS = `http://127.0.0.1:${PLAIN_PORT}`;
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 const { makeCertificate } = require('./tls-fixture.js');
 
-let browser, page, server, baseUrl;
+let browser, page, server, baseUrl, plainServer;
 const hits = { cg404List: 0, cg404Guide: 0, playlist: 0 };
 const cgRequests = [];
 let playwright;
@@ -391,6 +396,11 @@ before(async () => {
     .replace(/https:\/\/epg\.example\.com\/beta/g, `${baseUrl}/epg/schedule`)
     .replace(/https:\/\/example\.com\/epg\//g, `${baseUrl}/epg/`);
   app.get('/service-list.xml', (req, res) => res.type('application/xml').send(rawXml));
+  plainServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(rawXml);
+  });
+  await new Promise(r => { plainServer.once('error', () => { plainServer = null; r(); }); plainServer.listen(PLAIN_PORT, '127.0.0.1', r); });
   app.get('/epg/schedule', (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/epg/nownext',  (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/service-list-5g.xml', (req, res) => res.type('application/xml').send(fixture5gXml(baseUrl)));
@@ -449,6 +459,7 @@ after(async () => {
   if (page) await page.close();
   if (browser) await browser.close();
   if (server) await new Promise(r => server.close(r));
+  if (plainServer) await new Promise(r => plainServer.close(r));
 });
 
 // Every goto waits for domcontentloaded, not networkidle. The receiver pulls dash.js, hls.js and a
@@ -622,14 +633,23 @@ test('5G Broadcast instances are badged with their checked mbms:// signalling', 
   assert.match(await bad.locator('.ch-badge-5g').getAttribute('data-tooltip'), /signalling is wrong/);
 });
 
-// TS 103 770 V1.2.1 clause 7.3: plain HTTP to a metadata endpoint that is not on the client's private
-// subnet is refused, and the user is told why. Loopback is not an RFC 1918 subnet.
-test('a service list over plain HTTP off the private subnet is refused, with the reason', { skip: !playwright }, async () => {
-  const port = new URL(baseUrl).port;
-  await page.goto(`${baseUrl}/?url=${encodeURIComponent(`http://127.0.0.1:${port}/service-list.xml`)}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.ch-error', { timeout: 10000 });
-  assert.equal((await page.textContent('#list-name')).trim(), 'Load failed');
-  assert.match(await page.textContent('.ch-error'), /HTTP 400: .*clause 7\.3/);
+// TS 103 770 V1.2.1 clause 7.3 and the owner's decision: a service list over plain HTTP is loaded,
+// and a warning beside it says the request is not over TLS and quotes the clause's exception.
+test('a service list over plain HTTP loads, with the clause 7.3 warning beside it', { skip: !playwright }, async (t) => {
+  if (!plainServer) { t.skip(`port ${PLAIN_PORT} is in use`); return; }
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(`http://127.0.0.1:${PLAIN_PORT}/service-list.xml`)}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+  await page.waitForSelector('#tls-warn:not([hidden])', { timeout: 5000 });
+  const warning = await page.textContent('#tls-warn');
+  assert.match(warning, /Not over TLS/);
+  assert.match(warning, /clause 7\.3/);
+  assert.ok(warning.includes('For the specific case that a DVB-I client connects to a DVB-I metadata endpoint ' +
+    'located on the same private subnet (see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS.'));
+
+  // The same list over TLS carries no warning.
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+  assert.equal(await page.isHidden('#tls-warn'), true);
 });
 
 // TS 103 770 V1.2.1 clause 4.3.3.4: a 404 from a ContentGuideSource URL makes the client re-acquire the

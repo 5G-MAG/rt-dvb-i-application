@@ -4,7 +4,7 @@ const NS_TVA = 'urn:tva:metadata:2024';
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
-const DEFAULT_URL   = 'https://localhost:4000/service-list.xml';
+const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
 const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 const POLL_INTERVAL = 30000;
 
@@ -77,6 +77,7 @@ DVBIPlayer.setCMCDSession(CMCD_SESSION_ID);
 const $  = id => document.getElementById(id);
 const videoEl          = $('video');
 const listNameEl       = $('list-name');
+const tlsWarnEl        = $('tls-warn');
 const channelList      = $('channel-list');
 const noService        = $('no-service');
 const overlay          = $('player-overlay');
@@ -354,18 +355,37 @@ function uriText(node) {
   return el ? el.textContent.trim() : '';
 }
 
-// Plain http:// always goes through the proxy, even on this page's own origin: TS 103 770 V1.2.1
-// clause 7.3 permits HTTP without TLS only to an endpoint on the same private subnet, and only the
-// server can see which subnet it is on (server.js, assertTlsOrSameSubnet).
+// Cross-origin requests go through the proxy, which the browser needs for CORS; same-origin ones
+// are made directly.
 function resolveUrl(url) {
   if (!url) return url;
   try {
     const u = new URL(url, window.location.href);
-    if (u.origin === window.location.origin && u.protocol === 'https:') return url; // same-origin over TLS: no proxy needed
+    if (u.origin === window.location.origin) return url; // same-origin: browser resolves relative/// itself
     // Forward the resolved ABSOLUTE url (u.href), not the raw string, so protocol-relative //host/x
     // and bare relative paths reach the proxy as an absolute http(s) URL its new URL() can parse.
     return `/proxy?url=${encodeURIComponent(u.href)}`;
   } catch { return url; }
+}
+
+// TS 103 770 V1.2.1 clause 7.3 requires HTTP over TLS to DVB-I metadata endpoints, with one
+// exception, quoted here. A service list fetched with plain HTTP is loaded, with this warning shown
+// beside it; the proxy logs the same warning for every plain HTTP request it makes (server.js).
+const PRIVATE_SUBNET_EXCEPTION = 'For the specific case that a DVB-I client connects to a DVB-I metadata ' +
+  'endpoint located on the same private subnet (see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS.';
+
+function plainHttpWarning(url) {
+  let u;
+  try { u = new URL(url, window.location.href); } catch { return ''; }
+  if (u.protocol !== 'http:') return '';
+  return `Not over TLS: ${u.origin} is fetched with plain HTTP. ETSI TS 103 770 V1.2.1 clause 7.3 ` +
+         `requires HTTP over TLS except: “${PRIVATE_SUBNET_EXCEPTION}”`;
+}
+
+function showTlsWarning(url) {
+  const text = url ? plainHttpWarning(url) : '';
+  tlsWarnEl.textContent = text;
+  tlsWarnEl.hidden = !text;
 }
 
 // One HTTP client for every request to a DVB-I endpoint (service lists, the registry, the content
@@ -876,6 +896,7 @@ async function loadServiceList(urlOrUrls, { expectedId } = {}) {
         showVersionNotice('Could not refresh the service list — keeping the current one');
       } else {
         listNameEl.textContent = 'Load failed';
+        showTlsWarning('');
         channelList.innerHTML = `<li class="ch-error">Error: ${esc(err.message)}</li>`;
       }
     }
@@ -927,6 +948,7 @@ function installServiceList(url, body, contentType) {
   renderPackageChoice();
   currentVersion = parsed.version;
   listNameEl.textContent = parsed.name;
+  showTlsWarning(url);
   versionRow.textContent = parsed.version ? `Version ${parsed.version}` : '';
 
   renderChannelList();
@@ -2686,6 +2708,7 @@ function loadCustomList() {
   DVBIPlayer.stop();
   if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; }
   isCustomListActive = true;
+  showTlsWarning('');
   services = customList.map(e => ({ ...e }));
   rawLCNTables = [];
   currentVersion = null;
