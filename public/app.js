@@ -525,20 +525,29 @@ function parseServiceList(doc) {
         allowNoPackage: flag(spl, 'allowNoPackage', true) }
     : null;
 
-  // Build ContentGuideSource maps: CGSID → schedule URL and now/next URL (TS 103 770 §6.5.3)
-  const cgsMap        = {};
-  const cgsNowNextMap = {};
-  for (const cgs of doc.getElementsByTagNameNS(NS, 'ContentGuideSource')) {
-    const cgsid = cgs.getAttribute('CGSID');
-    const siep  = cgs.getElementsByTagNameNS(NS, 'ScheduleInfoEndpoint')[0];
-    // now/next endpoint: spec element is ProgramInfoEndpoint; accept legacy NowNextInfoEndpoint too
-    const nnep  = cgs.getElementsByTagNameNS(NS, 'ProgramInfoEndpoint')[0]
-               || cgs.getElementsByTagNameNS(NS, 'NowNextInfoEndpoint')[0];
-    if (cgsid && siep) { const uri = uriText(siep); if (uri) cgsMap[cgsid] = uri; }
-    if (cgsid && nnep) { const uri = uriText(nnep); if (uri) cgsNowNextMap[cgsid] = uri; }
+  // Content guide sources (clauses 5.5.6, 5.5.7, 6.1): the entries of ContentGuideSourceList by
+  // @CGSID, and the single list-level ContentGuideSource; each service may have its own.
+  const childEls = (node, name) => [...node.children].filter(c => c.localName === name);
+  const parseCgs = cgs => {
+    const ep = name => { const el = childEls(cgs, name)[0]; return el ? (uriText(el) || null) : null; };
+    const schedule = ep('ScheduleInfoEndpoint');
+    return schedule ? {
+      cgsid: cgs.getAttribute('CGSID') || '',
+      schedule,
+      program: ep('ProgramInfoEndpoint'),
+      group: ep('GroupInfoEndpoint'),
+      moreEpisodes: ep('MoreEpisodesEndpoint'),
+    } : null;
+  };
+  const cgsList = {};
+  for (const listEl of childEls(root, 'ContentGuideSourceList')) {
+    for (const cgs of childEls(listEl, 'ContentGuideSource')) {
+      const parsedCgs = parseCgs(cgs);
+      if (parsedCgs && parsedCgs.cgsid) cgsList[parsedCgs.cgsid] = parsedCgs;
+    }
   }
-  const listEpgEndpoint        = Object.values(cgsMap)[0]        || null;
-  const listNowNextEndpoint    = Object.values(cgsNowNextMap)[0] || null;
+  const listCgsEl = childEls(root, 'ContentGuideSource')[0];
+  const listLevelCgs = listCgsEl ? parseCgs(listCgsEl) : null;
 
   const parsed = [];
   for (const svc of doc.getElementsByTagNameNS(NS, 'Service')) {
@@ -762,20 +771,16 @@ function parseServiceList(doc) {
       .map(tr => tr.getAttribute('regionID') || tr.getAttribute('RegionID') || tr.textContent.trim())
       .filter(Boolean);
 
-    // ContentGuideServiceRef is at Service level (TS 103 770 §5.5.2); also check ServiceInstance for old XML
-    let epgEndpoint     = listEpgEndpoint;
-    let nowNextEndpoint = listNowNextEndpoint;
-    const svcCgsRefEl = svc.getElementsByTagNameNS(NS, 'ContentGuideServiceRef')[0];
-    if (svcCgsRefEl) {
-      const ref = svcCgsRefEl.textContent.trim();
-      if (ref && cgsMap[ref])        epgEndpoint     = cgsMap[ref];
-      if (ref && cgsNowNextMap[ref]) nowNextEndpoint = cgsNowNextMap[ref];
-    } else {
-      for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
-        const ref = getNS(inst, 'ContentGuideServiceRef', NS);
-        if (ref && cgsMap[ref]) { epgEndpoint = cgsMap[ref]; if (cgsNowNextMap[ref]) nowNextEndpoint = cgsNowNextMap[ref]; break; }
-      }
-    }
+    // The service's content guide source by the precedence of clause 6.1, and the identifier its
+    // requests use: ContentGuideServiceRef over UniqueIdentifier (clause 6.5.2.2).
+    const ownCgsEl = childEls(svc, 'ContentGuideSource')[0];
+    const guide = DVBIGuide.resolveSource({
+      own: ownCgsEl ? parseCgs(ownCgsEl) : null,
+      ref: (childEls(svc, 'ContentGuideSourceRef')[0]?.textContent || '').trim(),
+      list: cgsList,
+      listLevel: listLevelCgs,
+    });
+    const guideSid = DVBIGuide.serviceId(uid, (childEls(svc, 'ContentGuideServiceRef')[0]?.textContent || '').trim());
 
     // Subscription packages of any instance, for the badge; selection applies them per instance.
     const subscriptionPackages = [...new Set(instances.flatMap(i => i.packages || []))];
@@ -796,7 +801,7 @@ function parseServiceList(doc) {
     const instanceCount = svc.getElementsByTagNameNS(NS, 'ServiceInstance').length;
     const noIpDelivery = instances.length === 0 && instanceCount > 0;
     if (displayName && (instances.length || noIpDelivery)) {
-      parsed.push({ uid, name: displayName, provider, svcType, serviceType: serviceTypeHref, genres: genreHrefs, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, ratings, targetRegions, subscriptionPackages, serviceRestriction, serviceApps, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g, docOrder: parsed.length });
+      parsed.push({ uid, name: displayName, provider, svcType, serviceType: serviceTypeHref, genres: genreHrefs, logo, instances, lcn: null, guide, guideSid, genre, ratings, targetRegions, subscriptionPackages, serviceRestriction, serviceApps, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g, docOrder: parsed.length });
     }
   }
 
@@ -827,7 +832,7 @@ async function loadServiceList(urlOrUrls, { expectedId } = {}) {
   const hadServices = services.length > 0;
   if (!hadServices) {
     bufSpinner.hidden = true;
-    services = []; currentIdx = -1; epgCache = {}; nowNextCache = {}; activeGenre = '';
+    services = []; currentIdx = -1; epgCache = {}; nowNextCache = {}; nowNextWindow.clear(); activeGenre = '';
     channelList.innerHTML = '';
     noService.style.display = 'flex';
     listNameEl.textContent = 'Loading…';
@@ -892,7 +897,7 @@ function installServiceList(url, body, contentType) {
   DVBIPlayer.stop();
   bufSpinner.hidden = true;
   playError.hidden  = true;
-  epgCache = {}; nowNextCache = {}; activeGenre = '';
+  epgCache = {}; nowNextCache = {}; nowNextWindow.clear(); activeGenre = '';
   currentIdx = -1;
   tbName.textContent = 'Select a channel';
   tbLcn.hidden = true;
@@ -1135,7 +1140,14 @@ function serviceMinimumAge(svc) { return DVBIServiceList.minimumAgeFor(svc.ratin
 function currentProgrammeAge(svc) {
   const events = epgCache[svc.uid] || nowNextCache[svc.uid];
   const current = events ? DVBIEpg.getNowNext(events).current : null;
-  return typeof current?.parentalAge === 'number' ? current.parentalAge : null;
+  return programmeAge(current);
+}
+
+// The guide's minimum age for a programme in the user's country (clause 6.10.15, table 61), or null.
+function programmeAge(ev) {
+  if (!ev) return null;
+  if (ev.parentalRatings && ev.parentalRatings.length) return DVBIServiceList.minimumAgeFor(ev.parentalRatings, userCountry());
+  return typeof ev.parentalAge === 'number' ? ev.parentalAge : null;
 }
 
 // ── Subscription packages (clause 5.1.5) ───────────────────────────────────────────────────
@@ -1228,7 +1240,9 @@ function selectService(idx) {
 
   failedInstances = new Set();
   offAirShown = false;
+  parentalBlocked = false;
   clearTimeout(availabilityTimer);
+  clearTimeout(programmeTimer);
   hideAppFrame();
   contentFinishedEl.hidden = true;
 
@@ -1312,6 +1326,7 @@ function selectService(idx) {
   // of the programme on air taking precedence (clause 5.5.28). A PIN, where one is set, unlocks.
   const programmeAge = currentProgrammeAge(svc);
   if (DVBIServiceList.restricted(pgThreshold, serviceMinimumAge(svc), programmeAge) && !pgUnlocked.has(svc.uid)) {
+    parentalBlocked = true;
     if (pgPin) { openPinEntry(svc.uid, () => selectService(idx), programmeAge ?? serviceMinimumAge(svc)); return; }
     currentIdx = idx;
     currentSession++;
@@ -1442,6 +1457,7 @@ function showOverlay(svc, delivery) {
   overlayType.textContent = TYPE_LABEL[svc.svcType] || svc.svcType;
   if (delivery) updateDeliveryBadge(delivery, 0, svc.instances.length);
   updateLinkedAppButton(svc, delivery);
+  tbBoxsetBtn.hidden = !guideOf(svc)?.group;
   showOverlayBriefly(4500);
 }
 
@@ -1464,25 +1480,53 @@ function updateDeliveryBadge(delivery, instIdx, total) {
 
 // ── EPG loading ───────────────────────────────────────────────────────────────
 
-// A guide request through the shared HTTP client. A 404 from a ContentGuideSource URL makes the
-// client re-acquire the service list, to re-acquire the ContentGuideSource; a 404 again after
-// that backs the request off (TS 103 770 V1.2.1 clause 4.3.3.4).
-const guideReacquired = new Set(); // request keys that already caused a service list re-acquisition
+// Guide requests through the shared HTTP client, to the service's source (clause 6.1) with its
+// guide service identifier (clause 6.5.2.2). A 404 from a ContentGuideSource URL makes the client
+// re-acquire the service list, to re-acquire the ContentGuideSource; a 404 again after that backs
+// the request off (TS 103 770 V1.2.1 clause 4.3.3.4).
+const guideReacquired = new Set(); // endpoint|sid of requests that already caused a re-acquisition
 let reacquiring = null;
 
-async function guideLoad(endpoint, uid) {
-  const { events, result } = await DVBIEpg.load(endpoint, uid, dvbiHttp);
-  const key = DVBIEpg.requestKey(endpoint, uid);
-  if (events) { guideReacquired.delete(key); return events; }
-  if (result && result.status === 404 && !result.skipped) {
+// A saved custom-list entry from before sources were resolved carries only epgEndpoint.
+function guideOf(svc) {
+  return svc.guide || (svc.epgEndpoint ? { schedule: svc.epgEndpoint, program: null, group: null, moreEpisodes: null } : null);
+}
+function sidOf(svc) { return svc.guideSid || svc.uid; }
+
+function guideOutcome(r, endpoint, sid) {
+  const key = `${endpoint}|${sid}`;
+  if (r.result && r.result.ok) { guideReacquired.delete(key); return; }
+  if (r.result && r.result.status === 404 && !r.result.skipped) {
     if (guideReacquired.has(key)) {
-      dvbiHttp.backOff(key);
+      dvbiHttp.backOff(r.url);
     } else {
       guideReacquired.add(key);
       reacquireServiceList();
     }
   }
-  return null;
+}
+
+// Now and next on the ScheduleInfoEndpoint (clause 6.5.3.1): now_next=true for the channel list,
+// now_next=window (up to ten events either side) for the selected service.
+async function guideNowNext(svc, windowType = 'true') {
+  const g = guideOf(svc);
+  if (!g) return null;
+  const r = await DVBIEpg.loadNowNext(g.schedule, sidOf(svc), dvbiHttp, windowType);
+  guideOutcome(r, g.schedule, sidOf(svc));
+  if (r.events) checkOnDemand(r.events);
+  return r.events;
+}
+
+// The schedule from an hour ago to twelve hours ahead, in 3-hour aligned 12-hour windows
+// (clause 6.5.2.1).
+async function guideSchedule(svc) {
+  const g = guideOf(svc);
+  if (!g) return null;
+  const now = Date.now();
+  const r = await DVBIEpg.loadSchedule(g.schedule, sidOf(svc), dvbiHttp, now - 3600000, now + 12 * 3600000);
+  guideOutcome(r, g.schedule, sidOf(svc));
+  if (r.events) checkOnDemand(r.events);
+  return r.events;
 }
 
 function reacquireServiceList() {
@@ -1492,69 +1536,45 @@ function reacquireServiceList() {
     .finally(() => { reacquiring = null; });
 }
 
-// nowNextCache: lightweight 1-2 event result from NowNextInfoEndpoint (TS 103 770 §6.5.3.2)
-// epgCache: full schedule from ScheduleInfoEndpoint — only loaded when EPG panel opens
+// nowNextCache: now/next per service (clause 6.5.3); epgCache: the schedule (clause 6.5.2), loaded
+// when the EPG panel or grid needs it.
 let nowNextCache = {};
+
+function showServiceEvents(idx, events) {
+  const svc = services[idx];
+  if (idx === currentIdx) { DVBIEpg.render(epgStrip, svc.name, events); updateToolbarNow(); scheduleProgrammeCheck(); }
+  updateSidebarNow(idx, events);
+  if (epgPanelOpen && idx === currentIdx) refreshEPGPanel();
+}
 
 async function loadServiceEPG(idx) {
   const svc = services[idx];
-  if (!svc?.epgEndpoint) return;
+  if (!svc || !guideOf(svc)) return;
 
   // If EPG panel is open and full schedule is not yet cached, fetch it now
   if (epgPanelOpen && !epgCache[svc.uid]) {
-    try {
-      const events = await guideLoad(svc.epgEndpoint, svc.uid);
-      if (events) {
-        epgCache[svc.uid] = events;
-        nowNextCache[svc.uid] = events; // full schedule also serves as now/next
-        if (idx === currentIdx) { DVBIEpg.render(epgStrip, svc.name, events); updateToolbarNow(); }
-        updateSidebarNow(idx, events);
-        if (epgPanelOpen && idx === currentIdx) refreshEPGPanel();
-      }
-    } catch (e) {
-      if (idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">EPG unavailable</div>`;
-    }
+    const events = await guideSchedule(svc);
+    if (events) { epgCache[svc.uid] = events; showServiceEvents(idx, events); }
+    else if (idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">EPG unavailable</div>`;
     return;
   }
 
-  // For channel list display, use nowNextCache or epgCache if already loaded
   const displayEvents = epgCache[svc.uid] || nowNextCache[svc.uid];
-  if (displayEvents) {
-    if (idx === currentIdx) { DVBIEpg.render(epgStrip, svc.name, displayEvents); updateToolbarNow(); }
-    updateSidebarNow(idx, displayEvents);
-    if (epgPanelOpen && idx === currentIdx) refreshEPGPanel();
-    return;
-  }
+  if (displayEvents) showServiceEvents(idx, displayEvents);
+  if (epgCache[svc.uid] || nowNextWindow.has(svc.uid)) return;
 
-  // First load: fetch via NowNextInfoEndpoint if available (cheaper), else full schedule
-  const quickEp = svc.nowNextEndpoint || svc.epgEndpoint;
-  if (idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">Loading…</div>`;
-  try {
-    const events = await guideLoad(quickEp, svc.uid);
-    if (events) {
-      nowNextCache[svc.uid] = events;
-      if (!epgCache[svc.uid] && quickEp === svc.epgEndpoint) epgCache[svc.uid] = events;
-      if (idx === currentIdx) { DVBIEpg.render(epgStrip, svc.name, events); updateToolbarNow(); }
-      updateSidebarNow(idx, events);
-      if (epgPanelOpen && idx === currentIdx) refreshEPGPanel();
-    }
-  } catch (e) {
-    if (idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">EPG unavailable</div>`;
-  }
+  if (!displayEvents && idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">Loading…</div>`;
+  const events = await guideNowNext(svc, 'window');
+  if (events) { nowNextCache[svc.uid] = events; nowNextWindow.add(svc.uid); showServiceEvents(idx, events); }
+  else if (!displayEvents && idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">EPG unavailable</div>`;
 }
+const nowNextWindow = new Set(); // services whose now/next cache holds a now_next=window answer
 
 async function loadAllEPG() {
-  // Use NowNextInfoEndpoint when available per TS 103 770 §6.5.3.2 (cheaper than full schedule for channel list)
   await Promise.allSettled(services.map((svc, i) => {
-    const ep = svc.nowNextEndpoint || svc.epgEndpoint;
-    if (!ep) return Promise.resolve();
-    return guideLoad(ep, svc.uid).then(events => {
-      if (events) {
-        nowNextCache[svc.uid] = events;
-        if (!epgCache[svc.uid] && ep === svc.epgEndpoint) epgCache[svc.uid] = events;
-        updateSidebarNow(i, events);
-        if (i === currentIdx) DVBIEpg.render(epgStrip, svc.name, events);
-      }
+    if (!guideOf(svc)) return Promise.resolve();
+    return guideNowNext(svc).then(events => {
+      if (events) { nowNextCache[svc.uid] = events; showServiceEvents(i, events); }
     });
   }));
 }
@@ -1562,11 +1582,231 @@ async function loadAllEPG() {
 // Full schedules for the grid / panel (ScheduleInfoEndpoint). Loads only what is missing.
 async function loadFullSchedules() {
   await Promise.allSettled(services.map(svc => {
-    if (!svc.epgEndpoint || epgCache[svc.uid]) return Promise.resolve();
-    return guideLoad(svc.epgEndpoint, svc.uid).then(events => {
-      if (events) epgCache[svc.uid] = events;
-    });
+    if (!guideOf(svc) || epgCache[svc.uid]) return Promise.resolve();
+    return guideSchedule(svc).then(events => { if (events) epgCache[svc.uid] = events; });
   }));
+}
+
+// ── Programme parental guidance at playback (clause 6.10.15) ─────────────────────────────
+// "The DVB-I client shall not permit playback of programmes that do not meet the parental rating or
+// guidance criteria." While a service plays, the rating is checked again when the guide's current
+// programme changes; selection applies it as clause 5.5.28 says.
+let programmeTimer = null;
+let parentalBlocked = false;
+
+function scheduleProgrammeCheck() {
+  clearTimeout(programmeTimer);
+  if (currentIdx < 0 || isCatchup || parentalBlocked) return;
+  const svc = services[currentIdx];
+  if (DVBIServiceList.restricted(pgThreshold, serviceMinimumAge(svc), currentProgrammeAge(svc)) && !pgUnlocked.has(svc.uid)) {
+    selectService(currentIdx);
+    return;
+  }
+  const events = epgCache[svc.uid] || nowNextCache[svc.uid];
+  if (!events) return;
+  const { current, next } = DVBIEpg.getNowNext(events);
+  const at = current ? current.end.getTime() : next ? next.start.getTime() : null;
+  if (at == null) return;
+  programmeTimer = setTimeout(scheduleProgrammeCheck, Math.min(Math.max(0, at - Date.now()), MAX_TIMEOUT_MS));
+}
+
+// ── On-demand programmes (clauses 5.2.4, 6.10.8.2) ────────────────────────────────────────
+
+// Region identifiers "specific to the device" for contextual parameters (clause 5.2.4.4.6) and
+// regional filtering by the server (clauses 6.7.2, 6.8): the region chosen in settings.
+function deviceRegions() { return regionFilter ? [regionFilter] : []; }
+
+// Fetches an XML AIT with the contextual parameters of clause 5.2.4.4.6 and returns its
+// applications as [{ type, priority, url }], or null when it cannot be had.
+async function fetchAit(url, launchLocation) {
+  const r = await dvbiHttp.get(DVBIGuide.aitUrl(url, deviceRegions(), launchLocation));
+  if (!r.ok) return { apps: null, r };
+  const doc = new DOMParser().parseFromString(r.body, 'application/xml');
+  if (doc.querySelector('parsererror')) return { apps: null, r };
+  const text = (el, name) => (el.getElementsByTagNameNS('*', name)[0]?.textContent || '').trim();
+  const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
+    type: text(a, 'OtherApp'),
+    priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    url: text(a, 'URLBase') + text(a, 'applicationLocation'),
+  }));
+  return { apps, r };
+}
+
+// Template XML AIT results by URL (clause 5.2.4.4): compatible or not, until the expiry of clause
+// 5.2.4.4.5. "Client devices shall perform a textual comparison of the Template XML AIT URL against
+// the Template XML AIT URL of AITs that have already been processed." A result past its expiry is
+// still used while a new one cannot be fetched.
+const templateAits = new Map();
+async function templateCompatible(url) {
+  const known = templateAits.get(url);
+  if (known && known.expiresAt > Date.now()) return known.ok;
+  const { apps, r } = await fetchAit(url, 'epg');
+  if (!apps) return known ? known.ok : false;
+  // "the client device shall assume it can run the application if any of the applications listed
+  // meet the compatibility criteria" (clause 5.2.4.4.1). The mhp:applicationLocation is ignored.
+  const ok = apps.some(a => DVBIServiceList.selectAitApplication([{ ...a, url: a.url || 'x' }]));
+  templateAits.set(url, { ok, expiresAt: DVBIGuide.templateAitExpiry(Date.now(), r.maxAgeMs ?? null, r.expires) });
+  return ok;
+}
+
+// Whether an on-demand entry may be offered: available now (table 52) and playable by its Template
+// XML AIT ("A DVB-I client shall determine both content availability and its capability of playing
+// the content before an item of content is indicated as available to the user.", clause 5.2.4.1).
+async function onDemandOffered(od) {
+  if (!od || !DVBIGuide.onDemandAvailable(od, Date.now())) return false;
+  if (String(od.programUrlType).toLowerCase() !== 'application/vnd.dvb.ait+xml') return false;
+  return od.auxiliaryUrl ? templateCompatible(od.auxiliaryUrl) : true;
+}
+
+const onDemandByCrid = {};
+function checkOnDemand(events) {
+  const pending = events.filter(e => e.onDemand).map(async e => {
+    e.onDemandOk = await onDemandOffered(e.onDemand);
+    if (e.onDemandOk) onDemandByCrid[e.crid] = e;
+  });
+  if (pending.length) Promise.allSettled(pending).then(() => { if (epgPanelOpen) refreshEPGPanel(); });
+}
+
+// Plays an on-demand programme: its rating checked (clause 6.10.15), then the content deep-linked
+// XML AIT launches the on-demand player (table 52; clause 5.2.4.3), in the player area.
+async function playOnDemand(crid) {
+  const ev = onDemandByCrid[crid];
+  if (!ev || currentIdx < 0) return;
+  const svc = services[currentIdx];
+  const age = programmeAge(ev);
+  if (DVBIServiceList.restricted(pgThreshold, null, age)) {
+    if (!pgPin) { showVersionNotice(`Blocked by parental control: rated ${age}+`); return; }
+    if (!onDemandUnlocked.has(crid)) { openPinEntry(null, () => { onDemandUnlocked.add(crid); playOnDemand(crid); }, age); return; }
+  }
+  const session = ++currentSession;
+  closeEPGPanel();
+  closeBrowsePanel();
+  const { apps } = await fetchAit(ev.onDemand.programUrl, 'epg');
+  const app = apps && DVBIServiceList.selectAitApplication(apps);
+  const url = app && appLaunchUrl(app.url);
+  if (session !== currentSession) return;
+  // "If the content deep-linked XML AIT is unavailable the client device shall consider the content
+  // to be unavailable and behave gracefully." (clause 5.2.4.3)
+  if (!url) { showVersionNotice('This programme is not available'); return; }
+  DVBIPlayer.stop();
+  isCatchup = true;
+  backToLiveBtn.hidden = false;
+  clearTimeout(programmeTimer);
+  showAppFrame(url, () => { if (svc === services[currentIdx]) backToLive(); });
+}
+const onDemandUnlocked = new Set();
+
+// Detailed programme information on request (clause 6.6.2), into the detail pane.
+function onEventSelected(ev, detailEl) {
+  const svc = services[currentIdx];
+  const g = svc && guideOf(svc);
+  if (!g || !g.program || !ev.crid) return;
+  DVBIEpg.loadProgram(g.program, ev.crid, dvbiHttp).then(({ info }) => {
+    if (!info || !detailEl.isConnected) return;
+    const syn = detailEl.querySelector('.epg-detail-synopsis');
+    if (info.synopsis && syn) syn.textContent = info.synopsis;
+    else if (info.synopsis) detailEl.insertAdjacentHTML('beforeend', `<div class="epg-detail-synopsis">${esc(info.synopsis)}</div>`);
+  });
+}
+
+// ── More Episodes and Box Sets (clauses 6.7, 6.8, 6.9) ────────────────────────────────────
+
+const browsePanel = $('browse-panel');
+const browseList  = $('browse-list');
+const browseMore  = $('browse-more');
+const browseBack  = $('browse-back');
+let browseStack = [];   // views to go back to: { title, url, kind }
+let browseView = null;
+const tbBoxsetBtn = $('tb-boxset-btn');
+
+function moreEpisodesAvailable() {
+  const svc = services[currentIdx];
+  return !!(svc && guideOf(svc)?.moreEpisodes);
+}
+
+function closeBrowsePanel() { browsePanel.hidden = true; browseStack = []; browseView = null; }
+$('browse-close').addEventListener('click', closeBrowsePanel);
+browseBack.addEventListener('click', () => { const v = browseStack.pop(); if (v) showBrowse(v, true); });
+browseMore.addEventListener('click', () => { if (browseView?.next) loadBrowsePage(browseView, browseView.next, true); });
+
+function openMoreEpisodes(crid) {
+  const g = guideOf(services[currentIdx]);
+  if (!g?.moreEpisodes) return;
+  closeEPGPanel();
+  browseStack = [];
+  showBrowse({ title: 'More episodes', kind: 'programmes', url: DVBIGuide.moreEpisodesUrl(g.moreEpisodes, crid, deviceRegions()) });
+}
+
+function openBoxSets() {
+  const svc = services[currentIdx];
+  const g = svc && guideOf(svc);
+  if (!g?.group) return;
+  browseStack = [];
+  showBrowse({ title: 'Box set categories', kind: 'categories', url: DVBIGuide.boxSetCategoriesUrl(g.group, [sidOf(svc)], deviceRegions()) });
+}
+tbBoxsetBtn.addEventListener('click', openBoxSets);
+
+function showBrowse(view, back = false) {
+  if (!back && browseView) browseStack.push({ title: browseView.title, kind: browseView.kind, url: browseView.url });
+  browseView = { ...view, next: null, shown: 0 };
+  browsePanel.hidden = false;
+  browseBack.hidden = !browseStack.length;
+  $('browse-title').textContent = view.title;
+  browseList.innerHTML = '<div class="epg-empty" style="padding:1rem">Loading…</div>';
+  loadBrowsePage(browseView, view.url, false);
+}
+
+// One page of results. "A DVB-I client shall only use the provided relative links, without
+// modification, in order to traverse the results set." and pages are fetched only as needed for
+// display (clause 6.9): on request, or at once when a page leaves nothing to show.
+async function loadBrowsePage(view, url, append) {
+  const svc = services[currentIdx];
+  const { results } = await DVBIEpg.loadResults(url, dvbiHttp);
+  if (view !== browseView) return;
+  if (!append) browseList.innerHTML = '';
+  if (!results) { browseList.innerHTML = '<div class="epg-empty" style="padding:1rem">Not available</div>'; browseMore.hidden = true; return; }
+  const g = guideOf(svc);
+  let shown = 0;
+  if (view.kind === 'programmes') {
+    for (const item of DVBIGuide.orderResults(results.items)) {
+      // "In the event that this process indicates incompatibility between the content and the DVB-I
+      // client or the XML AIT request fails, the result shall be hidden from the user." (clause 6.7.3)
+      if (item.onDemand && !(await onDemandOffered(item.onDemand))) continue;
+      if (view !== browseView) return;
+      if (item.onDemand) onDemandByCrid[item.programId] = { crid: item.programId, onDemand: item.onDemand, parentalRatings: item.parentalRatings };
+      browseList.appendChild(browseItem(item.title, item.subtitle || item.synopsis, item.image,
+        item.onDemand ? () => playOnDemand(item.programId) : null));
+      shown++;
+    }
+  } else {
+    // Categories, then box sets ("Every Box Set in a Box Set List response shall have an associated
+    // Template XML AIT", clause 5.2.4.4.4), then their contents. Pagination groups carry no title.
+    const groups = results.groups.filter(gr => gr.groupId && gr.title);
+    for (const gr of groups) {
+      if (view.kind === 'lists' && gr.templateAit && !(await templateCompatible(gr.templateAit))) continue;
+      if (view !== browseView) return;
+      const nextView = view.kind === 'categories'
+        ? { title: gr.title, kind: 'lists', url: DVBIGuide.boxSetListsUrl(g.group, gr.groupId, [sidOf(svc)], deviceRegions()) }
+        : { title: gr.title, kind: 'programmes', url: DVBIGuide.boxSetContentsUrl(g.group, gr.groupId, deviceRegions()) };
+      browseList.appendChild(browseItem(gr.title, '', gr.image, () => showBrowse(nextView)));
+      shown++;
+    }
+  }
+  view.next = results.links.next || null;
+  view.shown += shown;
+  browseMore.hidden = !view.next;
+  if (!view.shown && view.next) loadBrowsePage(view, view.next, true);
+  else if (!view.shown && !view.next) browseList.innerHTML = '<div class="epg-empty" style="padding:1rem">Nothing to show</div>';
+}
+
+function browseItem(title, sub, image, onClick) {
+  const el = document.createElement('div');
+  el.className = 'browse-item';
+  el.setAttribute('role', 'option');
+  el.innerHTML = `${image ? `<img src="${esc(image)}" alt="" onerror="this.remove()"/>` : ''}` +
+    `<div><div class="browse-item-title">${esc(title)}</div>${sub ? `<div class="browse-item-sub">${esc(sub)}</div>` : ''}</div>`;
+  if (onClick) el.addEventListener('click', onClick);
+  return el;
 }
 
 // Best available events per service: full schedule if loaded, else now/next.
@@ -1711,8 +1951,8 @@ function renderEPGGrid() {
       epgGridInfo.hidden = false;
       epgGridInfo.innerHTML =
         `<strong>${esc(ev.title)}</strong> <span style="color:var(--text-2)">${esc(ev.time)}</span>` +
-        (ev.catchupUrl
-          ? ` <button class="catchup-btn" style="margin-left:0.5rem" onclick="closeEPGGrid();playCatchup(${esc(JSON.stringify(ev.catchupUrl))})">&#9654; Watch again</button>`
+        (ev.onDemandCrid
+          ? ` <button class="catchup-btn" style="margin-left:0.5rem" onclick="closeEPGGrid();playOnDemand(${esc(JSON.stringify(ev.onDemandCrid))})">&#9654; Watch again</button>`
           : '');
     }
   );
@@ -2390,7 +2630,7 @@ function loadCustomList() {
   rawLCNTables = [];
   currentVersion = null;
   currentIdx = -1;
-  epgCache = {}; nowNextCache = {};
+  epgCache = {}; nowNextCache = {}; nowNextWindow.clear();
   listNameEl.textContent = 'Custom List';
   versionRow.textContent = `${services.length} saved service${services.length !== 1 ? 's' : ''}`;
   renderChannelList();
@@ -2582,29 +2822,8 @@ function updateToolbarNow() {
 
 // ── Catch-up playback ────────────────────────────────────────────────────────
 
-function playCatchup(url) {
-  if (currentIdx < 0) return;
-  if (!/^https?:\/\//i.test(url)) {
-    playError.hidden = false;
-    playErrorMsg.textContent = 'Invalid catch-up URL';
-    return;
-  }
-  currentSession++;
-  const session = currentSession;
-  closeEPGPanel();
-  isCatchup = true;
-  backToLiveBtn.hidden = false;
-  const type = /\.mpd(\?|$)/i.test(url) || /[?&].*dash/i.test(url) ? 'application/dash+xml' : 'application/vnd.apple.mpegurl';
-  bufSpinner.hidden = false;
-  playError.hidden  = true;
-  DVBIPlayer.play(videoEl, url, type, null,
-    () => { if (session !== currentSession) return; bufSpinner.hidden = true; playError.hidden = false; playErrorMsg.textContent = 'Catch-up stream unavailable'; },
-    (buf) => { if (session !== currentSession) return; bufSpinner.hidden = !buf; },
-    () => { if (tracksPanelOpen) refreshTracksPanel(); }
-  );
-}
-
 function backToLive() {
+  hideAppFrame();
   if (currentIdx >= 0) selectService(currentIdx);
 }
 

@@ -78,7 +78,8 @@ const DVBIHttp = (() => {
     }
 
     // GET `url`. `key` names the request for the retry state (default: the URL).
-    // Resolves to { ok, status, body, contentType, fromCache, notModified, final, retryAt, error }.
+    // Resolves to { ok, status, body, contentType, fromCache, notModified, final, retryAt, error,
+    // maxAgeMs, expires }.
     async function get(url, { key = url, timeoutMs } = {}) {
       const s = state.get(key);
       if (s && s.final) return { ok: false, status: s.status, final: true, skipped: true };
@@ -86,7 +87,8 @@ const DVBIHttp = (() => {
 
       const cached = cache.get(url);
       if (cached && cached.expiresAt > now()) {
-        return { ok: true, status: 200, body: cached.body, contentType: cached.contentType, fromCache: true, notModified: true };
+        return { ok: true, status: 200, body: cached.body, contentType: cached.contentType, fromCache: true, notModified: true,
+          maxAgeMs: cached.expiresAt - now(), expires: cached.expires };
       }
 
       const headers = {};
@@ -106,20 +108,23 @@ const DVBIHttp = (() => {
       const maxAge = maxAgeMs(res.headers.get('Cache-Control'));
       const expiresAt = maxAge != null ? now() + maxAge : 0;
 
+      const expires = res.headers.get('Expires') || null;
       if (res.status === 304 && cached) {
         cached.expiresAt = expiresAt;
+        cached.expires = expires;
         const lm = res.headers.get('Last-Modified');
         if (lm) cached.lastModified = lm;
         state.delete(key);
-        return { ok: true, status: 304, body: cached.body, contentType: cached.contentType, notModified: true };
+        return { ok: true, status: 304, body: cached.body, contentType: cached.contentType, notModified: true, maxAgeMs: maxAge, expires };
       }
 
       if (res.ok) {
         const body = await res.text();
         const contentType = res.headers.get('Content-Type') || '';
-        cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null, expiresAt });
+        cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null, expiresAt, expires });
         state.delete(key);
-        return { ok: true, status: res.status, body, contentType };
+        // maxAgeMs and expires are passed on for callers with their own expiry rule (clause 5.2.4.4.5).
+        return { ok: true, status: res.status, body, contentType, maxAgeMs: maxAge, expires };
       }
 
       const errorBody = await res.text().catch(() => '');

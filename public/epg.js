@@ -35,6 +35,29 @@ const DVBIEpg = (() => {
     return null;
   }
 
+  // Every ParentalGuidance with an mpeg7:MinimumAge, with its CountryCodes (clause 6.10.15, table
+  // 61), as [{ age, countries }]. A MinimumAge of 255 "signals that a Content Rating classification
+  // scheme is required", which this client does not interpret; 255 then restricts at any threshold.
+  function parseParentalRatings(pi) {
+    const out = [];
+    for (const pg of pi.getElementsByTagNameNS('*', 'ParentalGuidance')) {
+      const age = pg.getElementsByTagNameNS('*', 'MinimumAge')[0];
+      if (!age) continue;
+      const n = parseInt(age.textContent.trim(), 10);
+      if (isNaN(n)) continue;
+      const cc = pg.getElementsByTagNameNS('*', 'CountryCodes')[0];
+      out.push({ age: n, countries: cc ? cc.textContent.split(',').map(c => c.trim()).filter(Boolean) : [] });
+    }
+    return out;
+  }
+
+  // Structural groups of a now/next response (clause 6.5.4.4).
+  const STRUCTURAL = {
+    'crid://dvb.org/metadata/schedules/now-next/now': 'now',
+    'crid://dvb.org/metadata/schedules/now-next/later': 'later',
+    'crid://dvb.org/metadata/schedules/now-next/earlier': 'earlier',
+  };
+
   function parseParentalAge(pi, ns) {
     const _ns = ns || NS;
     const pg  = pi.getElementsByTagNameNS(_ns, 'ParentalGuidance')[0];
@@ -70,9 +93,18 @@ const DVBIEpg = (() => {
         genre = gn ? gn.textContent.trim().toLowerCase() : (genreEl.getAttribute('href') || '').split(':').pop().toLowerCase() || null;
       }
 
-      // Series/episode from MemberOf (TS 103 770 §6.10.17); fall back to flat elements for old XML
-      let seriesNumber = null, episodeNumber = null, seriesTitle = null;
-      const memberOf = bd.getElementsByTagNameNS(ns, 'MemberOf')[0];
+      // MemberOf is a child of ProgramInformation (clause 6.10.4); older lists put it in
+      // BasicDescription. A structural now/next group gives the position (clause 6.5.4.4); any other
+      // group is the series (clause 6.10.17); fall back to flat elements for old XML.
+      let seriesNumber = null, episodeNumber = null, seriesTitle = null, structural = null, structuralIndex = null;
+      const memberOfs = [...pi.children].filter(c => c.localName === 'MemberOf');
+      if (!memberOfs.length) memberOfs.push(...bd.getElementsByTagNameNS(ns, 'MemberOf'));
+      const posEl = memberOfs.find(m => STRUCTURAL[m.getAttribute('crid')]);
+      if (posEl) {
+        structural = STRUCTURAL[posEl.getAttribute('crid')];
+        structuralIndex = parseInt(posEl.getAttribute('index') || '1', 10) || 1;
+      }
+      const memberOf = memberOfs.find(m => !STRUCTURAL[m.getAttribute('crid')]);
       if (memberOf) {
         const crid   = memberOf.getAttribute('crid') || '';
         episodeNumber = memberOf.getAttribute('index') || null;
@@ -93,6 +125,8 @@ const DVBIEpg = (() => {
         synopsis:      getText(pi, 'Synopsis', ns),
         image:         parseImage(bd, ns),
         parentalAge:   parseParentalAge(bd, ns),
+        parentalRatings: parseParentalRatings(bd),
+        structural, structuralIndex,
         seriesNumber,
         episodeNumber,
         seriesTitle,
@@ -100,12 +134,24 @@ const DVBIEpg = (() => {
       };
     }
 
-    // Catch-up: OnDemandProgram — check ProgramURL (TS 103 770 §6.10.8.2) with locationURL as fallback
-    const catchup = {};
+    // OnDemandProgram (clause 6.10.8.2, table 52): ProgramURL is "A URL location of a content
+    // deep-linked XML AIT for the on-demand programme. The XML AIT shall be used to launch the
+    // on-demand player."; AuxiliaryURL the Template XML AIT; and the availability window.
+    const onDemand = {};
     for (const od of doc.getElementsByTagNameNS(ns, 'OnDemandProgram')) {
       const crid = od.getElementsByTagNameNS(ns, 'Program')[0]?.getAttribute('crid') || '';
-      const url  = getText(od, 'ProgramURL', ns) || od.getAttribute('locationURL') || getText(od, 'locationURL', ns);
-      if (crid && url) catchup[crid] = url;
+      const pu = od.getElementsByTagNameNS(ns, 'ProgramURL')[0];
+      if (!crid || !pu) continue;
+      const aux = od.getElementsByTagNameNS(ns, 'AuxiliaryURL')[0];
+      onDemand[crid] = {
+        crid,
+        programUrl: pu.textContent.trim(),
+        programUrlType: pu.getAttribute('contentType') || '',
+        auxiliaryUrl: aux ? aux.textContent.trim() : '',
+        start: getText(od, 'StartOfAvailability', ns),
+        end: getText(od, 'EndOfAvailability', ns),
+        serviceIDRef: od.getAttribute('serviceIDRef') || '',
+      };
     }
 
     const events = [];
@@ -123,48 +169,141 @@ const DVBIEpg = (() => {
       // PublishedDuration before giving up so the invariant end > start always holds.
       if (!Number.isFinite(durMs) || durMs <= 0) durMs = parseISODuration(getText(ev, 'PublishedDuration', ns));
       if (isNaN(start.getTime()) || !durMs || durMs <= 0) return;
-      const catchupUrl = catchup[crid] || null;
       const base = info[crid] || {};
       // Inline InstanceDescription fallback for BroadcastEvent
       const instDesc = ev.getElementsByTagNameNS(ns, 'InstanceDescription')[0];
       const title    = base.title    || (instDesc ? getText(instDesc, 'Title',    ns) : '') || 'Unknown';
       const synopsis = base.synopsis || (instDesc ? getText(instDesc, 'Synopsis', ns) : '');
-      events.push({ ...base, title, synopsis, start, end: new Date(start.getTime() + durMs), durMs, catchupUrl });
+      events.push({ ...base, crid, title, synopsis, start, end: new Date(start.getTime() + durMs), durMs, onDemand: onDemand[crid] || null });
     }
 
     for (const ev of doc.getElementsByTagNameNS(ns, 'ScheduleEvent'))   parseEvent(ev);
     for (const ev of doc.getElementsByTagNameNS(ns, 'BroadcastEvent'))  parseEvent(ev);
 
-    events.sort((a, b) => a.start - b.start);
+    // "When the GroupInformationTable is provided in a response, the order of previous, present and
+    // future programs shall be determined by the structural CRIDs" (clause 6.5.4.1): earlier events
+    // count back from the current one, later ones forward. Otherwise by start time.
+    const rank = e => e.structural === 'earlier' ? -e.structuralIndex : e.structural === 'now' ? 0
+      : e.structural === 'later' ? e.structuralIndex : null;
+    const structured = events.some(e => e.structural);
+    events.sort((a, b) => structured && rank(a) != null && rank(b) != null ? rank(a) - rank(b) : a.start - b.start);
     // Deduplicate by start time (BroadcastEvent may overlap ScheduleEvent)
     const seen = new Set();
     return events.filter(e => { const k = e.start.getTime(); return seen.has(k) ? false : (seen.add(k), true); });
   }
 
-  // `endpoint` must be the RAW absolute URL straight from the service list XML. Query params are
-  // appended to it first; the client resolves the full URL (same origin or proxy) afterwards, so
-  // the params reach the target rather than the /proxy request.
-  // `client` is a DVBIHttp client (dvbi-http.js), which applies the caching and retry rules of
-  // TS 103 770 V1.2.1 clause 4.3 that clauses 6.2.3 and 6.2.4 refer to. The retry state is kept
-  // per endpoint and service (requestKey), since the time parameters move with the clock.
-  // Resolves to { events, result }: events is null when the request failed or the body is not a
-  // TV-Anytime document, and result is the client's answer.
-  async function load(endpoint, serviceId, client) {
-    if (!endpoint) return { events: null, result: null };
-    // sid is the spec-compliant parameter (TS 103 770 §6.5.2.2); serviceId kept for backward compat
-    const now = Math.floor(Date.now() / 1000);
-    const params = new URLSearchParams({ sid: serviceId, serviceId, start: String(now - 3600), end: String(now + 12 * 3600) });
-    const fullUrl = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${params.toString()}`;
-    const result = await client.get(fullUrl, { key: requestKey(endpoint, serviceId), timeoutMs: 10000 });
-    if (!result.ok) return { events: null, result };
-    const doc = new DOMParser().parseFromString(result.body, 'application/xml');
-    if (doc.querySelector('parsererror')) return { events: null, result };
-    return { events: parseTVA(doc), result };
+  // Results of More Episodes and Box Set requests (clauses 6.7.3, 6.8.2.3, 6.8.3.3, 6.8.4.3):
+  // programmes with their MemberOf@index and on-demand entry, groups with their Template XML AIT,
+  // and the pagination links of table 40 ("the presence of these links shall be used to determine
+  // whether there are further pages of results available").
+  const PAGINATION = 'urn:fvc:metadata:cs:HowRelatedCS:2015-12:pagination:';
+  const TEMPLATE_AIT = 'urn:fvc:metadata:cs:HowRelatedCS:2018:templateAIT';
+  function parseResults(doc) {
+    const rootNs = doc.documentElement?.namespaceURI || '';
+    const ns = rootNs.startsWith('urn:tva:metadata:') ? rootNs : NS;
+    const onDemand = {};
+    for (const od of doc.getElementsByTagNameNS(ns, 'OnDemandProgram')) {
+      const crid = od.getElementsByTagNameNS(ns, 'Program')[0]?.getAttribute('crid') || '';
+      const pu = od.getElementsByTagNameNS(ns, 'ProgramURL')[0];
+      const aux = od.getElementsByTagNameNS(ns, 'AuxiliaryURL')[0];
+      if (crid && pu) onDemand[crid] = { crid, programUrl: pu.textContent.trim(), programUrlType: pu.getAttribute('contentType') || '',
+        auxiliaryUrl: aux ? aux.textContent.trim() : '', start: getText(od, 'StartOfAvailability', ns), end: getText(od, 'EndOfAvailability', ns),
+        serviceIDRef: od.getAttribute('serviceIDRef') || '' };
+    }
+    const items = [...doc.getElementsByTagNameNS(ns, 'ProgramInformation')].map(pi => {
+      const id = pi.getAttribute('programId') || '';
+      const bd = pi.getElementsByTagNameNS(ns, 'BasicDescription')[0] || pi;
+      const titles = [...bd.getElementsByTagNameNS(ns, 'Title')];
+      const memberOf = [...pi.children].find(c => c.localName === 'MemberOf');
+      return {
+        programId: id,
+        title: (titles.find(t => (t.getAttribute('type') || 'main') === 'main') || titles[0])?.textContent.trim() || id,
+        subtitle: titles.find(t => t.getAttribute('type') === 'secondary')?.textContent.trim() || '',
+        synopsis: getText(bd, 'Synopsis', ns),
+        image: parseImage(bd, ns),
+        parentalRatings: parseParentalRatings(bd),
+        index: memberOf ? parseInt(memberOf.getAttribute('index') || '', 10) : null,
+        onDemand: onDemand[id] || null,
+      };
+    });
+    const links = {};
+    const groups = [];
+    for (const gi of doc.getElementsByTagNameNS(ns, 'GroupInformation')) {
+      let templateAit = '';
+      for (const rm of gi.getElementsByTagNameNS(ns, 'RelatedMaterial')) {
+        const href = rm.getElementsByTagNameNS(ns, 'HowRelated')[0]?.getAttribute('href') || '';
+        const uri = (rm.getElementsByTagNameNS(ns, 'MediaUri')[0]?.textContent || '').trim().replace(/\s+/g, '');
+        if (href.startsWith(PAGINATION) && uri) links[href.slice(PAGINATION.length)] = uri;
+        if (href === TEMPLATE_AIT) templateAit = (rm.getElementsByTagNameNS(ns, 'AuxiliaryURI')[0]?.textContent || '').trim();
+      }
+      const bd = gi.getElementsByTagNameNS(ns, 'BasicDescription')[0] || gi;
+      groups.push({ groupId: gi.getAttribute('groupId') || '', title: getText(bd, 'Title', ns), image: parseImage(bd, ns), templateAit,
+        numOfItems: gi.getAttribute('numOfItems') });
+    }
+    return { items, groups, links };
   }
 
-  function requestKey(endpoint, serviceId) { return `${endpoint}|${serviceId}`; }
+  // Requests go through `client`, a DVBIHttp client (dvbi-http.js), which applies the caching and
+  // retry rules of TS 103 770 V1.2.1 clause 4.3 that clauses 6.2.3 and 6.2.4 refer to. URLs are
+  // built by DVBIGuide (guide.js) from the raw endpoint of the service list; the client resolves
+  // them (same origin or proxy) afterwards. Each loader resolves to { events | info | results,
+  // result, url } with the client's answer for the failing (or last) request.
+  async function fetchDoc(url, client) {
+    const result = await client.get(url, { timeoutMs: 10000 });
+    if (!result.ok) return { doc: null, result, url };
+    const doc = new DOMParser().parseFromString(result.body, 'application/xml');
+    return { doc: doc.querySelector('parsererror') ? null : doc, result, url };
+  }
+
+  // Schedule for [fromMs, toMs], as 12-hour windows on 3-hour boundaries (clause 6.5.2.1), combined.
+  async function loadSchedule(endpoint, sid, client, fromMs, toMs) {
+    if (!endpoint) return { events: null, result: null, url: null };
+    const all = [];
+    let last = { result: null, url: null };
+    for (const win of DVBIGuide.scheduleWindows(fromMs, toMs)) {
+      const r = await fetchDoc(DVBIGuide.scheduleUrl(endpoint, sid, win), client);
+      last = r;
+      if (!r.doc) return { events: null, result: r.result, url: r.url };
+      all.push(...parseTVA(r.doc));
+    }
+    const seen = new Set();
+    const events = all.sort((a, b) => a.start - b.start)
+      .filter(e => { const k = e.start.getTime(); return seen.has(k) ? false : (seen.add(k), true); });
+    return { events, result: last.result, url: last.url };
+  }
+
+  // Now/next (clause 6.5.3.1), now_next=true or window.
+  async function loadNowNext(endpoint, sid, client, windowType = 'true') {
+    if (!endpoint) return { events: null, result: null, url: null };
+    const r = await fetchDoc(DVBIGuide.nowNextUrl(endpoint, sid, windowType), client);
+    return { events: r.doc ? parseTVA(r.doc) : null, result: r.result, url: r.url };
+  }
+
+  // Programme information by CRID (clause 6.6.2): the ProgramInformation of that programme.
+  async function loadProgram(endpoint, pid, client) {
+    if (!endpoint || !pid) return { info: null, result: null, url: null };
+    const r = await fetchDoc(DVBIGuide.programUrl(endpoint, pid), client);
+    if (!r.doc) return { info: null, result: r.result, url: r.url };
+    const { items } = parseResults(r.doc);
+    const pi = items.find(i => i.programId === pid) || null;
+    if (pi) {
+      const long = [...r.doc.getElementsByTagNameNS('*', 'Synopsis')].find(s => s.getAttribute('length') === 'long');
+      if (long) pi.synopsis = long.textContent.trim();
+    }
+    return { info: pi, result: r.result, url: r.url };
+  }
+
+  // A page of More Episodes or Box Set results, from a URL built by DVBIGuide or a pagination link
+  // used "without modification" (clause 6.9).
+  async function loadResults(url, client) {
+    const r = await fetchDoc(url, client);
+    return { results: r.doc ? parseResults(r.doc) : null, result: r.result, url };
+  }
 
   function getNowNext(events) {
+    // A now/next response says which event is on air (clause 6.5.4.4).
+    const onAir = events.find(e => e.structural === 'now');
+    if (onAir) return { current: onAir, next: events.find(e => e.structural === 'later' && e.structuralIndex === 1) || null };
     const now = new Date();
     for (let i = 0; i < events.length; i++) {
       if (events[i].start <= now && events[i].end > now) return { current: events[i], next: events[i+1] || null };
@@ -303,7 +442,10 @@ const DVBIEpg = (() => {
         ${totalMin} min${isNow ? ` &nbsp;·&nbsp; ${remMin} min left` : ''}
       </div>
       ${ev.synopsis ? `<div class="epg-detail-synopsis">${esc(ev.synopsis)}</div>` : ''}
-      ${ev.catchupUrl && ev.end <= new Date() ? `<button class="catchup-btn" onclick="playCatchup(${esc(JSON.stringify(ev.catchupUrl))})">▶ Watch again</button>` : ''}`;
+      ${ev.onDemandOk && ev.end <= new Date() ? `<button class="catchup-btn" onclick="playOnDemand(${esc(JSON.stringify(ev.crid))})">▶ Watch again</button>` : ''}
+      ${typeof moreEpisodesAvailable === 'function' && moreEpisodesAvailable() && ev.crid ? `<button class="catchup-btn" onclick="openMoreEpisodes(${esc(JSON.stringify(ev.crid))})">More episodes</button>` : ''}`;
+    // Detailed programme information on request (clause 6.6.2), where the app provides it.
+    if (typeof onEventSelected === 'function') onEventSelected(ev, detailEl);
   }
 
   function getGenres(events) {
@@ -340,7 +482,7 @@ const DVBIEpg = (() => {
         if (w < 2) return '';
         const isNow = ev.start <= now && ev.end > now;
         return `<div class="epg-grid-prog${isNow ? ' now' : ''}" style="left:${x.toFixed(0)}px;width:${(w - 1).toFixed(0)}px" ` +
-          `data-title="${esc(ev.title)}" data-time="${fmt(ev.start)}–${fmt(ev.end)}" data-catchup="${esc(ev.catchupUrl || '')}">` +
+          `data-title="${esc(ev.title)}" data-time="${fmt(ev.start)}–${fmt(ev.end)}" data-crid="${esc(ev.onDemandOk && ev.end <= now ? ev.crid : '')}">` +
           `<span class="epg-grid-prog-label">${esc(ev.title)}</span></div>`;
       }).join('');
 
@@ -371,7 +513,7 @@ const DVBIEpg = (() => {
         ev.stopPropagation();
         containerEl.querySelectorAll('.epg-grid-prog.sel').forEach(s => s.classList.remove('sel'));
         el.classList.add('sel');
-        if (onSelectEvent) onSelectEvent({ title: el.dataset.title, time: el.dataset.time, catchupUrl: el.dataset.catchup || '' });
+        if (onSelectEvent) onSelectEvent({ title: el.dataset.title, time: el.dataset.time, onDemandCrid: el.dataset.crid || '' });
       });
     });
 
@@ -383,7 +525,7 @@ const DVBIEpg = (() => {
     }
   }
 
-  return { load, requestKey, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration };
+  return { loadSchedule, loadNowNext, loadProgram, loadResults, parseTVA, parseResults, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration };
 })();
 
 // Exposed for Node-based unit tests (test/epg.test.js). `module` is undefined when loaded via a

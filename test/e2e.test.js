@@ -16,6 +16,7 @@ const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl;
 const hits = { cg404List: 0, cg404Guide: 0 };
+const cgRequests = [];
 let playwright;
 try { playwright = require('playwright'); }
 catch { /* handled in before() */ }
@@ -250,6 +251,107 @@ function fixtureRegistryXml(base) {
 </ServiceListEntryPoints>`;
 }
 
+// Content guide sources by the precedence of clause 6.1: "Own" has its own ContentGuideSource,
+// "Ref" a ContentGuideSourceRef into the ContentGuideSourceList and a ContentGuideServiceRef,
+// "Top" neither, so the list-level ContentGuideSource applies.
+function fixtureGuideListXml(base) {
+  const cgs = (id, path, extra = '') => `<ContentGuideSource CGSID="${id}"><ProviderName>CG</ProviderName>
+      <ScheduleInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/${path}/schedule</dvbisd-t:URI></ScheduleInfoEndpoint>${extra}</ContentGuideSource>`;
+  const full = `
+      <ProgramInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/program</dvbisd-t:URI></ProgramInfoEndpoint>
+      <GroupInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/group/</dvbisd-t:URI></GroupInfoEndpoint>
+      <MoreEpisodesEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/cg/top/more</dvbisd-t:URI></MoreEpisodesEndpoint>`;
+  const service = (uid, name, guide) => `
+  <Service version="1">
+    <UniqueIdentifier>tag:g,2026:${uid}</UniqueIdentifier>
+    <ServiceInstance><DASHDeliveryParameters><UriBasedLocation contentType="application/dash+xml"><dvbisd-t:URI>${base}/dash/${uid}.mpd</dvbisd-t:URI></UriBasedLocation></DASHDeliveryParameters></ServiceInstance>
+    <ServiceName>${name}</ServiceName><ProviderName>P</ProviderName>${guide}
+  </Service>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024" xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023"
+  id="tag:g,2026:list" version="1" xml:lang="en">
+  <Name>Guide List</Name><ProviderName>P</ProviderName>
+  <ContentGuideSourceList>${cgs('listed', 'ref')}</ContentGuideSourceList>
+  ${cgs('top', 'top', full)}${
+  service('top', 'Top', '')}${
+  service('ref', 'Ref', '<ContentGuideSourceRef>listed</ContentGuideSourceRef><ContentGuideServiceRef>shared</ContentGuideServiceRef>')}${
+  service('own', 'Own', cgs('own', 'own'))}
+</ServiceList>`;
+}
+
+// TV-Anytime responses as clauses 6.5 to 6.9 describe them. Schedule requests are checked against
+// clause 6.5.2.1 and answered 400 when they break it; every request is recorded in cgRequests.
+function fixtureGuide(req, res, base) {
+  cgRequests.push(req.originalUrl);
+  const q = new URL(req.originalUrl, base).searchParams;
+  const path = req.params[0];
+  const now = Date.now();
+  const iso = ms => new Date(ms).toISOString();
+  const tva = body => `<?xml version="1.0" encoding="UTF-8"?>
+<TVAMain xmlns="urn:tva:metadata:2024" xmlns:mpeg7="urn:tva:mpeg7:2008" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xml:lang="en">
+  <ProgramDescription>${body}</ProgramDescription></TVAMain>`;
+  const pi = (crid, title, extra = '') => `<ProgramInformation programId="${crid}"><BasicDescription>
+      <Title type="main">${title}</Title><Synopsis length="short">${title} short</Synopsis>${extra}</BasicDescription></ProgramInformation>`;
+  const ev = (crid, startMs, mins) => `<ScheduleEvent><Program crid="${crid}"/><PublishedStartTime>${iso(startMs)}</PublishedStartTime><PublishedDuration>PT${mins}M</PublishedDuration></ScheduleEvent>`;
+  const od = (crid, ait, template) => `<OnDemandProgram serviceIDRef="tag:g,2026:top"><Program crid="${crid}"/>
+      <ProgramURL contentType="application/vnd.dvb.ait+xml">${base}/cg/ait/${ait}</ProgramURL>
+      <AuxiliaryURL contentType="application/vnd.dvb.ait+xml">${base}/cg/ait/${template}</AuxiliaryURL>
+      <PublishedDuration>PT30M</PublishedDuration><StartOfAvailability>${iso(now - 86400000)}</StartOfAvailability>
+      <EndOfAvailability>${iso(now + 86400000)}</EndOfAvailability><DeliveryMode>streaming</DeliveryMode><Free value="true"/></OnDemandProgram>`;
+  const ait = (type, loc) => `<?xml version="1.0" encoding="UTF-8"?><mhp:ServiceDiscovery xmlns:mhp="urn:dvb:mhp:2009"><mhp:ApplicationDiscovery DomainName="g">
+    <mhp:ApplicationList><mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type><mhp:priority>1</mhp:priority></mhp:applicationDescriptor>
+    <mhp:applicationTransport><mhp:URLBase>${base}/app/</mhp:URLBase></mhp:applicationTransport><mhp:applicationLocation>${loc}</mhp:applicationLocation></mhp:Application></mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
+  const xml = body => res.type('application/xml').send(body);
+  const group = (id, title, extra = '') => `<GroupInformation groupId="${id}"><BasicDescription><Title>${title}</Title>${extra}</BasicDescription></GroupInformation>`;
+  const page = (href, url) => `<RelatedMaterial><HowRelated href="urn:fvc:metadata:cs:HowRelatedCS:2015-12:pagination:${href}"/><MediaLocator><MediaUri>${url.replace(/&/g, '&amp;')}</MediaUri></MediaLocator></RelatedMaterial>`;
+  const member = (crid, index) => `<MemberOf xsi:type="MemberOfType" crid="${crid}" index="${index}"/>`;
+
+  if (/\/schedule$/.test(path)) {
+    if (q.get('now_next')) {
+      // Clause 6.5.4.4: the current event in the now group, the next one in the later group. The
+      // current one carries an 18 rating; listed later first, so order comes from the groups.
+      const N = 'crid://dvb.org/metadata/schedules/now-next/';
+      return xml(tva(`<ProgramInformationTable>
+        ${pi('crid://g/next', 'Next Show').replace('</ProgramInformation>', member(N + 'later', 1) + '</ProgramInformation>')}
+        ${pi('crid://g/now', 'Now Show', '<ParentalGuidance><mpeg7:MinimumAge>18</mpeg7:MinimumAge></ParentalGuidance>').replace('</ProgramInformation>', member(N + 'now', 1) + '</ProgramInformation>')}
+      </ProgramInformationTable>
+      <GroupInformationTable>${group(N + 'now', 'now')}${group(N + 'later', 'later')}</GroupInformationTable>
+      <ProgramLocationTable><Schedule serviceIDRef="${q.get('sid')}">${ev('crid://g/next', now + 1200000, 30)}${ev('crid://g/now', now - 600000, 30)}</Schedule></ProgramLocationTable>`));
+    }
+    const start = Number(q.get('start')), end = Number(q.get('end'));
+    if (!(start % 10800 === 0 && end % 10800 === 0 && [21600, 43200].includes(end - start))) return res.status(400).end();
+    const pastStart = now - 45 * 60000;   // ended a quarter of an hour ago
+    const inWindow = pastStart >= start * 1000 && pastStart < end * 1000;
+    return xml(tva(`<ProgramInformationTable>${inWindow ? pi('crid://g/past', 'Past Show') : ''}</ProgramInformationTable>
+      <ProgramLocationTable><Schedule serviceIDRef="${q.get('sid')}" start="${iso(start * 1000)}" end="${iso(end * 1000)}">${inWindow ? ev('crid://g/past', pastStart, 30) : ''}</Schedule>
+      ${inWindow ? od('crid://g/past', 'deep.xml?pid=past', 'template-ok.xml') : ''}</ProgramLocationTable>`));
+  }
+  if (/\/program$/.test(path)) {
+    return xml(tva(`<ProgramInformationTable><ProgramInformation programId="${q.get('pid')}"><BasicDescription><Title type="main">Detail</Title>
+      <Synopsis length="long">The long synopsis from the programme information endpoint</Synopsis></BasicDescription></ProgramInformation></ProgramInformationTable><ProgramLocationTable/>`));
+  }
+  const results = (items, links = '') => xml(tva(`<ProgramInformationTable>${items.map(([crid, title, index]) =>
+      pi(crid, title).replace('</ProgramInformation>', member('crid://g/results', index) + '</ProgramInformation>')).join('')}</ProgramInformationTable>
+    <GroupInformationTable><GroupInformation groupId="crid://g/results" ordered="true" numOfItems="3"><BasicDescription>${links}</BasicDescription></GroupInformation></GroupInformationTable>
+    <ProgramLocationTable>${items.map(([crid, , , template]) => od(crid, 'deep.xml?pid=' + encodeURIComponent(crid), template)).join('')}</ProgramLocationTable>`));
+  if (/\/more$/.test(path)) {
+    const next = `${base}/cg/top/more?pid=${encodeURIComponent(q.get('pid'))}&type=ondemand&page=2`;
+    if (q.get('page') === '2') return results([['crid://g/ep3', 'Episode 3', 3, 'template-ok.xml']], page('first', next.replace('&page=2', '')) + page('prev', next.replace('&page=2', '')));
+    return results([['crid://g/ep2', 'Episode 2', 2, 'template-ok.xml'], ['crid://g/ep1', 'Episode 1', 1, 'template-hbbtv.xml']],
+      page('next', next) + page('last', next));
+  }
+  if (/\/group\/categories$/.test(path)) return xml(tva(`<GroupInformationTable>${group('crid://g/cat/drama', 'Drama')}</GroupInformationTable>`));
+  if (/\/group\/$/.test(path)) {
+    const tmpl = t => `<RelatedMaterial><HowRelated href="urn:fvc:metadata:cs:HowRelatedCS:2018:templateAIT"/><MediaLocator><MediaUri/><AuxiliaryURI contentType="application/vnd.dvb.ait+xml">${base}/cg/ait/${t}</AuxiliaryURI></MediaLocator></RelatedMaterial>`;
+    return xml(tva(`<GroupInformationTable>${group('crid://g/box/ok', 'Playable Box', tmpl('template-ok.xml'))}${group('crid://g/box/hbbtv', 'HbbTV Box', tmpl('template-hbbtv.xml'))}</GroupInformationTable>`));
+  }
+  if (/\/group\/contents$/.test(path)) return results([['crid://g/box/e1', 'Box Episode', 1, 'template-ok.xml']]);
+  if (path === 'ait/deep.xml') return res.type('application/vnd.dvb.ait+xml').send(ait('text/html', `ondemand.html?pid=${q.get('pid')}`));
+  if (path === 'ait/template-ok.xml') return res.type('application/vnd.dvb.ait+xml').send(ait('text/html', ''));
+  if (path === 'ait/template-hbbtv.xml') return res.type('application/vnd.dvb.ait+xml').send(ait('application/vnd.hbbtv.xhtml+xml', ''));
+  res.status(404).end();
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -278,6 +380,9 @@ before(async () => {
   app.get('/app/:page.html', (req, res) => res.type('text/html').send(`<!doctype html><title>${req.params.page}</title><p>${req.params.page}</p>`));
   app.get('/app/ait.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)));
   app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
+  // Content guide server written from clause 6 (see fixtureGuide below).
+  app.get('/service-list-guide.xml', (req, res) => res.type('application/xml').send(fixtureGuideListXml(baseUrl)));
+  app.get(/^\/cg\/(.*)$/, (req, res) => fixtureGuide(req, res, baseUrl));
   app.get('/registry', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl)));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
@@ -695,4 +800,103 @@ test('a list whose @id differs from the registry\'s ServiceListId is treated as 
   assert.ok(logged.some(t => t.includes("does not match the registry's ServiceListId tag:wrong,2026:id")),
     `the mismatch is the reported cause: ${JSON.stringify(logged)}`);
   assert.notEqual((await page.textContent('#list-name')).trim(), '5G Broadcast List');
+});
+
+// Content guide, TS 103 770 V1.2.1 clause 6, against the server above.
+async function openGuideList() {
+  await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => localStorage.clear());
+  cgRequests.length = 0;
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-guide.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Top")', { timeout: 10000 });
+  await page.evaluate(() => { window.dashjs = window.dashjs || {}; window.__plays = []; DVBIPlayer.play = (v, url) => { window.__plays.push(url); }; });
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && cgRequests.filter(u => u.includes('now_next')).length < 3) await new Promise(r => setTimeout(r, 100));
+}
+
+test('content guide sources by clause 6.1 precedence, now/next with sid by clause 6.5.2.2', { skip: !playwright }, async () => {
+  await openGuideList();
+  const nn = cgRequests.filter(u => u.includes('now_next=true'));
+  assert.ok(nn.some(u => u.startsWith('/cg/top/schedule?sid=tag%3Ag%2C2026%3Atop&now_next=true')), `list-level source: ${JSON.stringify(nn)}`);
+  assert.ok(nn.some(u => u.startsWith('/cg/ref/schedule?sid=shared&now_next=true')), 'ContentGuideSourceRef resolved, ContentGuideServiceRef as sid');
+  assert.ok(nn.some(u => u.startsWith('/cg/own/schedule?')), 'the service\'s own source');
+  assert.equal(cgRequests.filter(u => /start=/.test(u)).length, 0, 'the channel list asks now/next, not a schedule');
+  // Clause 6.5.4.4: the now group decides what is on air, whatever the document order.
+  await page.waitForFunction(() => document.querySelector('#ch-now-0 .ch-now-title, .ch-now-title')?.textContent.includes('Show'), null, { timeout: 5000 });
+  const nowTitles = await page.$$eval('.ch-now-title', els => els.map(e => e.textContent.trim()));
+  assert.ok(nowTitles.includes('Now Show'), `now/next current programme: ${JSON.stringify(nowTitles)}`);
+  // The selected service gets the wider now_next=window answer (clause 6.5.3.1).
+  await page.click('.ch-card:has(.ch-name:text-is("Ref"))');
+  await page.waitForFunction(() => true);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !cgRequests.includes('/cg/ref/schedule?sid=shared&now_next=window')) await new Promise(r => setTimeout(r, 100));
+  assert.ok(cgRequests.includes('/cg/ref/schedule?sid=shared&now_next=window'), JSON.stringify(cgRequests));
+});
+
+test('a programme rated above the threshold blocks the service during that programme', { skip: !playwright }, async () => {
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); window.__plays = []; });
+  await page.selectOption('#pg-threshold', '16');
+  await page.click('.ch-card:has(.ch-name:text-is("Top"))');
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  assert.match(await page.textContent('#play-error-msg'), /rated 18\+/);
+  assert.deepEqual(await page.evaluate(() => window.__plays), [], 'the guide rating takes precedence: nothing played');
+  await page.selectOption('#pg-threshold', '');
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.remove('open'); });
+});
+
+test('schedule requests use 3-hour aligned windows of 12 hours, and programme information by pid', { skip: !playwright }, async () => {
+  await page.click('.ch-card:has(.ch-name:text-is("Top"))');
+  cgRequests.length = 0;
+  await page.keyboard.press('e');
+  await page.waitForSelector('.epg-event:has-text("Past Show")', { timeout: 5000 });
+  const sched = cgRequests.filter(u => u.startsWith('/cg/top/schedule?start='));
+  assert.ok(sched.length >= 1);
+  for (const u of sched) {
+    const q = new URL(u, baseUrl).searchParams;
+    assert.equal(Number(q.get('start')) % 10800, 0);
+    assert.equal(Number(q.get('end')) - Number(q.get('start')), 43200);
+  }
+  await page.click('.epg-event:has-text("Past Show")');
+  await page.waitForFunction(() => document.querySelector('#epg-detail')?.textContent.includes('long synopsis'), null, { timeout: 5000 });
+  assert.ok(cgRequests.includes('/cg/top/program?pid=crid%3A%2F%2Fg%2Fpast'));
+});
+
+test('watch again launches the on-demand player from the deep-linked XML AIT', { skip: !playwright }, async () => {
+  await page.waitForSelector('#epg-detail .catchup-btn:has-text("Watch again")', { timeout: 5000 });
+  await page.click('#epg-detail .catchup-btn:has-text("Watch again")');
+  await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/ondemand\.html\?pid=past/);
+  assert.ok(cgRequests.some(u => u.startsWith('/cg/ait/deep.xml?pid=past&lloc=epg')), 'contextual parameters of clause 5.2.4.4.6');
+  assert.ok(cgRequests.some(u => u.startsWith('/cg/ait/template-ok.xml?lloc=epg')), 'the Template XML AIT was checked first');
+  await page.click('#back-to-live-btn');
+});
+
+test('more episodes: ordered by MemberOf@index, incompatible hidden, next page on request', { skip: !playwright }, async () => {
+  await page.keyboard.press('e');
+  await page.click('.epg-event:has-text("Past Show")');
+  await page.click('#epg-detail .catchup-btn:has-text("More episodes")');
+  await page.waitForSelector('#browse-list .browse-item', { timeout: 5000 });
+  assert.deepEqual(await page.$$eval('#browse-list .browse-item-title', e => e.map(x => x.textContent)), ['Episode 2'],
+    'Episode 1 needs HbbTV by its Template XML AIT and is hidden');
+  assert.ok(cgRequests.includes('/cg/top/more?pid=crid%3A%2F%2Fg%2Fpast&type=ondemand'));
+  assert.equal(cgRequests.filter(u => u.includes('page=2')).length, 0, 'the next page is not fetched pre-emptively');
+  await page.click('#browse-more');
+  await page.waitForSelector('#browse-list .browse-item:has-text("Episode 3")', { timeout: 5000 });
+  assert.equal(await page.isHidden('#browse-more'), true, 'no next link on the last page');
+  await page.click('#browse-close');
+});
+
+test('box sets: categories, lists filtered by Template XML AIT, contents', { skip: !playwright }, async () => {
+  await page.click('#tb-boxset-btn');
+  await page.waitForSelector('#browse-list .browse-item:has-text("Drama")', { timeout: 5000 });
+  assert.ok(cgRequests.includes('/cg/top/group/categories?sid%5B%5D=tag%3Ag%2C2026%3Atop'));
+  await page.click('#browse-list .browse-item:has-text("Drama")');
+  await page.waitForSelector('#browse-list .browse-item:has-text("Playable Box")', { timeout: 5000 });
+  assert.equal(await page.locator('#browse-list .browse-item:has-text("HbbTV Box")').count(), 0);
+  await page.click('#browse-list .browse-item:has-text("Playable Box")');
+  await page.waitForSelector('#browse-list .browse-item:has-text("Box Episode")', { timeout: 5000 });
+  assert.ok(cgRequests.includes('/cg/top/group/contents?groupId=crid%3A%2F%2Fg%2Fbox%2Fok&format=paginated'));
+  await page.click('#browse-back');
+  await page.waitForSelector('#browse-list .browse-item:has-text("Playable Box")', { timeout: 5000 });
+  await page.click('#browse-close');
 });

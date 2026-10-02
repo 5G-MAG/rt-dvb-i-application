@@ -127,6 +127,7 @@
       <tva:Name xml:lang="en">News</tva:Name>
     </ServiceGenre>
     <ServiceType href="urn:dvb:metadata:cs:ServiceTypeCS:2019:linear"/>
+    <ContentGuideSourceRef>sample-epg</ContentGuideSourceRef>
     <ContentGuideServiceRef>sample-epg</ContentGuideServiceRef>
     <ParentalRating>
       <MinimumAge>12</MinimumAge>
@@ -161,6 +162,7 @@
       <tva:Name xml:lang="en">Music</tva:Name>
     </ServiceGenre>
     <ServiceType href="urn:dvb:metadata:cs:ServiceTypeCS:2019:linear-radio"/>
+    <ContentGuideSourceRef>epg-svc-b</ContentGuideSourceRef>
     <ContentGuideServiceRef>epg-svc-b</ContentGuideServiceRef>
   </Service>
   <!-- Gamma TV: broadcast-only, no IP delivery -->

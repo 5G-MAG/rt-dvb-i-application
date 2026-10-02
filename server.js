@@ -191,9 +191,10 @@ async function readCapped(response) {
 
 // Request and response headers the proxy passes through, for the caching and retry rules of
 // TS 103 770 V1.2.1 clause 4.3: If-Modified-Since upstream (4.3.2.2); Last-Modified,
-// Cache-Control (4.3.2.1) and Retry-After (4.3.3.3) back to the browser.
+// Cache-Control (4.3.2.1) and Retry-After (4.3.3.3) back to the browser, and Expires, which sets
+// when a Template XML AIT is refreshed (clause 5.2.4.4.5).
 const FORWARD_REQUEST_HEADERS  = ['if-modified-since'];
-const FORWARD_RESPONSE_HEADERS = ['last-modified', 'cache-control', 'retry-after'];
+const FORWARD_RESPONSE_HEADERS = ['last-modified', 'cache-control', 'retry-after', 'expires'];
 
 // Redirects are followed here rather than by fetch, so that every hop passes the same address and
 // TLS checks as the first. The limit is the one fetch applies itself (WHATWG Fetch, HTTP-redirect

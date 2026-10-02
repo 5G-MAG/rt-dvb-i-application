@@ -22,7 +22,8 @@ must resolve only to addresses in an IETF RFC 1918 clause 3 block that lies on t
 this host's interfaces (`assertTlsOrSameSubnet` in `server.js`); anything else must be `https://`.
 Loopback is not an RFC 1918 block, so `http://localhost` is refused. Redirects are followed by the
 proxy itself, up to 20 as fetch does, so that each hop is checked. `If-Modified-Since` is passed
-upstream and `Last-Modified`, `Cache-Control` and `Retry-After` are passed back (clause 4.3).
+upstream and `Last-Modified`, `Cache-Control`, `Retry-After` and `Expires` are passed back (clause 4.3;
+`Expires` for Template XML AITs, clause 5.2.4.4.5).
 
 ## Environment variables
 

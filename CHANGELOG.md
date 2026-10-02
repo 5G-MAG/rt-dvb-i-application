@@ -1,5 +1,25 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Content guide per TS 103 770 V1.2.1 clause 6
+
+- **Source by the precedence of clause 6.1** (`public/guide.js`): the service's own
+  `ContentGuideSource`, then the `ContentGuideSourceList` entry its `ContentGuideSourceRef` names,
+  then the list-level `ContentGuideSource`. `ContentGuideServiceRef` is the `sid` when present; it
+  is no longer looked up as a CGSID.
+- **Requests as clause 6 sets them**: now/next with `now_next=true` for the channel list and
+  `now_next=window` for the selected service, ordered by the structural now/later/earlier groups;
+  schedules in 12-hour windows starting on 3-hour boundaries, combined; programme information by
+  `pid`; square brackets percent-encoded; the extra `serviceId` parameter is gone.
+- **More Episodes and Box Sets** (categories, lists, contents) in a browse panel, ordered by
+  `MemberOf@index`, one page at a time through the pagination links.
+- **On demand through the XML AIT**: `ProgramURL` is a content deep-linked XML AIT whose HTML5
+  application is started in the player; an item is offered only within its availability window and
+  when its Template XML AIT has an HTML5 application (cached as clause 5.2.4.4.5 says); XML AIT
+  requests carry `regionID[]` and `lloc=epg`. Results whose Template XML AIT fails are hidden.
+- **Programme ratings at playback**: the rating of the programme on air, per country, is checked at
+  selection and again when the programme changes, and before an on-demand programme starts.
+- The proxy passes `Expires` back as well.
+
 ## 2026-10 — Registry responses acted on per TS 103 770 V1.2.1 clause 8.5.3.2
 
 - **A regulator's list is the default** (`public/discovery.js`): offerings with

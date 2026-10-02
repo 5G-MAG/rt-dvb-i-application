@@ -893,3 +893,10 @@ kbd {
   border-radius: 50%; width: 2rem; height: 2rem; cursor: pointer; font-size: 1.2rem; line-height: 1;
 }
 .content-finished { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; z-index: 19; }
+
+/* ── More Episodes / Box Sets list ────────────────────────────────── */
+.browse-item { display: flex; gap: 0.7rem; align-items: center; padding: 0.5rem 1.1rem; cursor: pointer; border-bottom: 1px solid var(--border); }
+.browse-item:hover { background: rgba(255,255,255,0.05); }
+.browse-item img { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.browse-item-title { font-size: 0.86rem; font-weight: 600; }
+.browse-item-sub { font-size: 0.74rem; color: var(--text-2); }
