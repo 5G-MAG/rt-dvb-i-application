@@ -17,6 +17,7 @@ test('MBMS URL: the forms of TS 26.347 clauses 8.2.3 and 8.2.4 are valid', () =>
     'mbms://www.example.com/',
     'mbms://service1000.mbms.operator.com&label=http://www.example.com/videos/sample.mp4',
     'mbms://rom.3gpp.org&tmgi=901056&serviceArea=40201&frequency=68616&subCarrierSpacing=1.25&bandwidth=8',
+    'mbms://rom.3gpp.org&serviceArea=40201&frequency=68616&subCarrierSpacing=1.25&bandwidth=8&serviceId=%22television-service%22',
   ]) assert.equal(DVBIMbmsUrl.problem(u), null, u);
 });
 
@@ -28,6 +29,9 @@ test('MBMS URL: what clause 8.2.2 does not allow is reported', () => {
     'mbms://example.com/a?x=1',
     'mbms://example.com&foo=1',
     'mbms://example.com&label=not a uri',
+    'mbms://example.com/a b',
+    'mbms://exa mple.com',
+    'mbms://example.com#f',
   ]) assert.ok(DVBIMbmsUrl.problem(u), u);
 });
 
