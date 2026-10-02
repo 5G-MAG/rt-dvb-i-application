@@ -66,18 +66,28 @@ npm install
 npm start           # http://localhost:5000
 ```
 
-By default it loads `http://localhost:4000/service-list.xml`, which is where the provider serves one.
-To use a different list, open settings and set the URL, or pass it in the query string:
+By default it loads `https://localhost:4000/service-list.xml`, which is where the provider serves one
+when it runs with HTTPS. To use a different list, open settings and set the URL, or pass it in the
+query string:
 
 ```
-http://localhost:5000/?url=http://localhost:4000/service-list.xml
+http://localhost:5000/?url=https://localhost:4000/service-list.xml
 ```
+
+**Service lists, registries and content guides are fetched over HTTPS.** ETSI TS 103 770 V1.2.1
+clause 7.3 allows plain HTTP only to an endpoint on the client's own private subnet (the address
+blocks of IETF RFC 1918 clause 3), so an `http://` URL is fetched only when every address it
+resolves to is on the subnet of one of this server's network interfaces. Loopback is not such a
+subnet: `http://localhost:4000` is refused, and the list shows the reason. Run the provider with
+HTTPS (its `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH`), or address it by this machine's private address.
 
 **A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
-private and loopback addresses, which is where a local provider sits, so name its origin explicitly:
+private and loopback addresses, which is where a local provider sits, so name its origin explicitly.
+A self-signed certificate on the provider is trusted through Node.js's `NODE_EXTRA_CA_CERTS`:
 
 ```bash
-PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
+PROXY_ALLOW_ORIGINS="https://localhost:4000,https://127.0.0.1:4000" \
+NODE_EXTRA_CA_CERTS=/path/to/provider-cert.pem npm start
 ```
 
 ## Configuration
@@ -109,6 +119,9 @@ npm test                    # unit tests, proxy guard tests, browser tests
 BROWSER=firefox npm test    # where Chromium cannot run
 npx playwright install chromium firefox
 ```
+
+The browser and proxy tests serve over HTTPS with a throwaway certificate made by the `openssl`
+command line when they start, so `openssl` must be installed.
 
 Some environments cannot run Chromium at all: every subresource fetch fails with
 `ERR_INSUFFICIENT_RESOURCES` and the renderer crashes, so the page loads and nothing renders. That

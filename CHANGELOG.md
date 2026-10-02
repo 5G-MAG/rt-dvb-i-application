@@ -1,5 +1,24 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — HTTP behaviour and TLS per TS 103 770 V1.2.1 clauses 4.3 and 7.3
+
+- **One HTTP client for every DVB-I request** (`public/dvbi-http.js`): service lists, the registry
+  and the content guide. It honours `Cache-Control: max-age` per response and answers a repeated
+  request from its cache while fresh, sends `If-Modified-Since` with the `Last-Modified` it holds,
+  does not repeat a request that got 400 or 406, waits for `Retry-After` after 401 or 403, and
+  after 500, 502, 504 or a connection failure waits the random back-off of clause 4.3.3.7.
+- **The proxy passes the headers through**: `If-Modified-Since` upstream; `Last-Modified`,
+  `Cache-Control` and `Retry-After` back, and relays a 304.
+- **Version polling** no longer requests the list before its max-age has passed, and retries after
+  a failure on the clause 4.3.3.7 back-off instead of a fixed doubling capped at one hour.
+- **A 404 from a content guide URL re-acquires the service list**, and backs off if the guide
+  still answers 404 (clause 4.3.3.4).
+- **Plain HTTP only on the same private subnet** (clause 7.3): `/proxy` refuses an `http://`
+  endpoint, or redirect hop, that is not on an RFC 1918 subnet of one of its interfaces, and the
+  browser sends every `http://` request through `/proxy` so that the check applies. The default
+  list is now `https://localhost:4000/service-list.xml`.
+- The tests serve over HTTPS with a throwaway certificate; `npm test` runs `test/*.test.js`.
+
 ## 2026-10 — 5G Broadcast signalling checked, local extension dropped
 
 - **5G Broadcast is read from `IdentifierBasedDeliveryParameters`** holding an `mbms://` locator, as

@@ -4,7 +4,7 @@ const NS_TVA = 'urn:tva:metadata:2024';
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
-const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
+const DEFAULT_URL   = 'https://localhost:4000/service-list.xml';
 const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 const POLL_INTERVAL = 30000;
 
@@ -25,7 +25,6 @@ let currentVersion = null;
 
 let currentListUrl = localStorage.getItem('dvbi-url') || DEFAULT_URL;
 let epgCache    = {};
-let lastModifiedMap = {}; // url → Last-Modified value for conditional requests (TS 103 770 §4.3.2.2)
 let pollTimer   = null;
 let epgTimer    = null;
 let overlayTimer = null;
@@ -337,15 +336,31 @@ function uriText(node) {
   return el ? el.textContent.trim() : '';
 }
 
+// Plain http:// always goes through the proxy, even on this page's own origin: TS 103 770 V1.2.1
+// clause 7.3 permits HTTP without TLS only to an endpoint on the same private subnet, and only the
+// server can see which subnet it is on (server.js, assertTlsOrSameSubnet).
 function resolveUrl(url) {
   if (!url) return url;
   try {
     const u = new URL(url, window.location.href);
-    if (u.origin === window.location.origin) return url; // same-origin: browser resolves relative/// itself
+    if (u.origin === window.location.origin && u.protocol === 'https:') return url; // same-origin over TLS: no proxy needed
     // Forward the resolved ABSOLUTE url (u.href), not the raw string, so protocol-relative //host/x
     // and bare relative paths reach the proxy as an absolute http(s) URL its new URL() can parse.
     return `/proxy?url=${encodeURIComponent(u.href)}`;
   } catch { return url; }
+}
+
+// One HTTP client for every request to a DVB-I endpoint (service lists, the registry, the content
+// guide), so caching, conditional requests and retry rules of clause 4.3 apply to all of them.
+const dvbiHttp = DVBIHttp.createClient({ fetch: (...args) => fetch(...args), resolve: resolveUrl });
+
+// The text of a failed response, for the message shown to the user: the proxy explains a refusal
+// (for example an http:// endpoint outside the private subnet, clause 7.3) in a JSON body.
+function failureText(r) {
+  if (r.status === 0) return r.error || 'connection failed';
+  let why = '';
+  try { why = /json/.test(r.contentType || '') ? (JSON.parse(r.body).error || '') : ''; } catch (_) { /* not JSON */ }
+  return `HTTP ${r.status}${why ? `: ${why}` : ''}`;
 }
 
 // ── LCN region-aware assignment (A184r2 §4.8, Table 4.8-1) ───────────────────
@@ -722,9 +737,12 @@ function parseServiceList(doc) {
 // ── Load service list ─────────────────────────────────────────────────────────
 
 // Multi-URI fallback per TS 103 770 §4.3.3.3-6: accepts a single URL or array of fallback URLs.
+// Resolves to 'installed' when a list was parsed and installed, 'kept' when the current list is
+// unchanged (fresh in the cache or 304), or 'failed'.
 async function loadServiceList(urlOrUrls) {
   const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
   const primaryUrl = urls[0];
+  const previousUrl = currentListUrl;
 
   currentListUrl = primaryUrl;
   localStorage.setItem('dvbi-url', primaryUrl);
@@ -748,56 +766,17 @@ async function loadServiceList(urlOrUrls) {
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
     try {
-      const headers = {};
-      if (lastModifiedMap[url]) headers['If-Modified-Since'] = lastModifiedMap[url];
-      const res = await fetch(resolveUrl(url), { headers });
-      if (res.status === 304) return; // not modified — keep current services & playback intact
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const lm = res.headers.get('Last-Modified');
-      if (lm) lastModifiedMap[url] = lm;
-      const ctype = (res.headers.get('Content-Type') || '').toLowerCase();
-      const body  = await res.text();
-      const doc = new DOMParser().parseFromString(body, 'application/xml');
-      if (doc.querySelector('parsererror')) {
-        // Naming what actually arrived turns the commonest mistake into a self-explaining one:
-        // a URL pointing at a portal's home page, or at an API, answers 200 with HTML or JSON,
-        // and "not valid XML" alone gives no hint that the URL itself is the problem.
-        const looksHtml = /html/.test(ctype) || /^\s*<!doctype html/i.test(body);
-        const looksJson = /json/.test(ctype) || /^\s*[{[]/.test(body);
-        const what = looksHtml ? 'an HTML page' : looksJson ? 'a JSON response' : `content of type ${ctype || 'unknown'}`;
-        throw new Error(!body.trim()
-          ? `${url} returned an empty response`
-          : `${url} returned ${what}, not a DVB-I service list. Check the URL in settings: it should be the service list itself, for example http://localhost:4000/service-list.xml`);
+      const r = await dvbiHttp.get(url);
+      if (!r.ok) throw new Error(failureText(r));
+      // Not modified, or still fresh by its max-age (clause 4.3.2): keep current services and playback.
+      if (r.notModified && hadServices && !isCustomListActive && url === previousUrl) {
+        currentListUrl = url;
+        localStorage.setItem('dvbi-url', url);
+        urlInput.value = url;
+        return 'kept';
       }
-      const parsed = parseServiceList(doc);
-
-      // Committed to a new list now — tear down current state and rebuild.
-      DVBIPlayer.stop();
-      bufSpinner.hidden = true;
-      playError.hidden  = true;
-      epgCache = {}; nowNextCache = {}; activeGenre = '';
-      currentIdx = -1;
-      tbName.textContent = 'Select a channel';
-      tbLcn.hidden = true;
-      tbNow.hidden = true;
-
-      // Update stored URL to the one that worked
-      currentListUrl = url;
-      localStorage.setItem('dvbi-url', url);
-      urlInput.value = url;
-
-      isCustomListActive = false;
-      services = parsed.services;
-      rawLCNTables = parsed.lcnTables;
-      rebuildLCNs(); // assign LCNs and sort services using current regionFilter
-      currentVersion = parsed.version;
-      listNameEl.textContent = parsed.name;
-      versionRow.textContent = parsed.version ? `Version ${parsed.version}` : '';
-
-      renderChannelList();
-      loadAllEPG();
-      startVersionPolling(url);
-      return;
+      installServiceList(url, r.body, r.contentType);
+      return 'installed';
     } catch (err) {
       if (i < urls.length - 1) {
         console.warn(`Service list URI ${i + 1}/${urls.length} failed (${url}), trying next:`, err.message);
@@ -813,6 +792,53 @@ async function loadServiceList(urlOrUrls) {
       }
     }
   }
+  return 'failed';
+}
+
+// Parses a fetched service list and makes it the current one. Throws when the body is not a
+// service list.
+function installServiceList(url, body, contentType) {
+  const ctype = (contentType || '').toLowerCase();
+  const doc = new DOMParser().parseFromString(body, 'application/xml');
+  if (doc.querySelector('parsererror')) {
+    // Naming what actually arrived turns the commonest mistake into a self-explaining one:
+    // a URL pointing at a portal's home page, or at an API, answers 200 with HTML or JSON,
+    // and "not valid XML" alone gives no hint that the URL itself is the problem.
+    const looksHtml = /html/.test(ctype) || /^\s*<!doctype html/i.test(body);
+    const looksJson = /json/.test(ctype) || /^\s*[{[]/.test(body);
+    const what = looksHtml ? 'an HTML page' : looksJson ? 'a JSON response' : `content of type ${ctype || 'unknown'}`;
+    throw new Error(!body.trim()
+      ? `${url} returned an empty response`
+      : `${url} returned ${what}, not a DVB-I service list. Check the URL in settings: it should be the service list itself, for example ${DEFAULT_URL}`);
+  }
+  const parsed = parseServiceList(doc);
+
+  // Committed to a new list now — tear down current state and rebuild.
+  DVBIPlayer.stop();
+  bufSpinner.hidden = true;
+  playError.hidden  = true;
+  epgCache = {}; nowNextCache = {}; activeGenre = '';
+  currentIdx = -1;
+  tbName.textContent = 'Select a channel';
+  tbLcn.hidden = true;
+  tbNow.hidden = true;
+
+  // Update stored URL to the one that worked
+  currentListUrl = url;
+  localStorage.setItem('dvbi-url', url);
+  urlInput.value = url;
+
+  isCustomListActive = false;
+  services = parsed.services;
+  rawLCNTables = parsed.lcnTables;
+  rebuildLCNs(); // assign LCNs and sort services using current regionFilter
+  currentVersion = parsed.version;
+  listNameEl.textContent = parsed.name;
+  versionRow.textContent = parsed.version ? `Version ${parsed.version}` : '';
+
+  renderChannelList();
+  loadAllEPG();
+  startVersionPolling(url);
 }
 
 // ── Channel list rendering ────────────────────────────────────────────────────
@@ -1195,6 +1221,34 @@ function updateDeliveryBadge(delivery, instIdx, total) {
 
 // ── EPG loading ───────────────────────────────────────────────────────────────
 
+// A guide request through the shared HTTP client. A 404 from a ContentGuideSource URL makes the
+// client re-acquire the service list, to re-acquire the ContentGuideSource; a 404 again after
+// that backs the request off (TS 103 770 V1.2.1 clause 4.3.3.4).
+const guideReacquired = new Set(); // request keys that already caused a service list re-acquisition
+let reacquiring = null;
+
+async function guideLoad(endpoint, uid) {
+  const { events, result } = await DVBIEpg.load(endpoint, uid, dvbiHttp);
+  const key = DVBIEpg.requestKey(endpoint, uid);
+  if (events) { guideReacquired.delete(key); return events; }
+  if (result && result.status === 404 && !result.skipped) {
+    if (guideReacquired.has(key)) {
+      dvbiHttp.backOff(key);
+    } else {
+      guideReacquired.add(key);
+      reacquireServiceList();
+    }
+  }
+  return null;
+}
+
+function reacquireServiceList() {
+  if (reacquiring || isCustomListActive || !currentListUrl) return;
+  reacquiring = loadServiceList(currentListUrl)
+    .then(outcome => { if (outcome === 'kept') loadAllEPG(); })
+    .finally(() => { reacquiring = null; });
+}
+
 // nowNextCache: lightweight 1-2 event result from NowNextInfoEndpoint (TS 103 770 §6.5.3.2)
 // epgCache: full schedule from ScheduleInfoEndpoint — only loaded when EPG panel opens
 let nowNextCache = {};
@@ -1206,7 +1260,7 @@ async function loadServiceEPG(idx) {
   // If EPG panel is open and full schedule is not yet cached, fetch it now
   if (epgPanelOpen && !epgCache[svc.uid]) {
     try {
-      const events = await DVBIEpg.load(svc.epgEndpoint, svc.uid);
+      const events = await guideLoad(svc.epgEndpoint, svc.uid);
       if (events) {
         epgCache[svc.uid] = events;
         nowNextCache[svc.uid] = events; // full schedule also serves as now/next
@@ -1233,7 +1287,7 @@ async function loadServiceEPG(idx) {
   const quickEp = svc.nowNextEndpoint || svc.epgEndpoint;
   if (idx === currentIdx) epgStrip.innerHTML = `<div class="epg-label">EPG · ${esc(svc.name)}</div><div class="epg-empty">Loading…</div>`;
   try {
-    const events = await DVBIEpg.load(quickEp, svc.uid);
+    const events = await guideLoad(quickEp, svc.uid);
     if (events) {
       nowNextCache[svc.uid] = events;
       if (!epgCache[svc.uid] && quickEp === svc.epgEndpoint) epgCache[svc.uid] = events;
@@ -1251,7 +1305,7 @@ async function loadAllEPG() {
   await Promise.allSettled(services.map((svc, i) => {
     const ep = svc.nowNextEndpoint || svc.epgEndpoint;
     if (!ep) return Promise.resolve();
-    return DVBIEpg.load(ep, svc.uid).then(events => {
+    return guideLoad(ep, svc.uid).then(events => {
       if (events) {
         nowNextCache[svc.uid] = events;
         if (!epgCache[svc.uid] && ep === svc.epgEndpoint) epgCache[svc.uid] = events;
@@ -1266,7 +1320,7 @@ async function loadAllEPG() {
 async function loadFullSchedules() {
   await Promise.allSettled(services.map(svc => {
     if (!svc.epgEndpoint || epgCache[svc.uid]) return Promise.resolve();
-    return DVBIEpg.load(svc.epgEndpoint, svc.uid).then(events => {
+    return guideLoad(svc.epgEndpoint, svc.uid).then(events => {
       if (events) epgCache[svc.uid] = events;
     });
   }));
@@ -1296,51 +1350,56 @@ function startEPGRefresh() {
   }, 60000);
 }
 
-// ── Version polling with exponential back-off (TS 103 770 §4.3.3.7) ─────────────────────
-
-const POLL_MAX_BACKOFF = 3600000; // cap at 1 hour
+// ── Version polling (TS 103 770 V1.2.1 clauses 4.3.2 and 4.3.3) ────────────────────────────────
+//
+// The installed list is checked every POLL_INTERVAL, but never before its max-age has passed
+// (clause 4.3.2.1); a failure is retried after the wait the HTTP client sets: the back-off of
+// clause 4.3.3.7 after 5xx or a connection failure, Retry-After after 401 or 403. After 400 or
+// 406 the request is not sent again (clause 4.3.3.2), so polling stops until a list is loaded anew.
 
 function startVersionPolling(url) {
   if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; }
-  let backoffMs  = POLL_INTERVAL;
-  let errorCount = 0;
 
-  async function doPoll() {
-    try {
-      const hdrs = {};
-      if (lastModifiedMap[url]) hdrs['If-Modified-Since'] = lastModifiedMap[url];
-      const res = await fetch(resolveUrl(url), { headers: hdrs, signal: AbortSignal.timeout(15000) });
-      if (res.status === 304) {
-        errorCount = 0; backoffMs = POLL_INTERVAL;
-      } else if (res.ok) {
-        errorCount = 0; backoffMs = POLL_INTERVAL;
-        const lm = res.headers.get('Last-Modified');
-        if (lm) lastModifiedMap[url] = lm;
-        const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
-        const v   = doc.documentElement?.getAttribute('version');
-        if (v && v !== currentVersion) {
-          currentVersion = v;
-          const prevUid = currentIdx >= 0 ? services[currentIdx]?.uid : null;
-          epgCache = {}; nowNextCache = {};
-          await loadServiceList(url);
-          if (prevUid) {
-            const ni = services.findIndex(s => s.uid === prevUid);
-            if (ni >= 0) selectService(ni);
-          }
-          showVersionNotice(`Service list updated (v${v})`);
-        }
-      } else {
-        throw new Error(`HTTP ${res.status}`);
-      }
-    } catch (_) {
-      errorCount++;
-      // Exponential back-off on error: 30s → 60s → 120s → … → 1h max
-      backoffMs = Math.min(POLL_INTERVAL * Math.pow(2, errorCount), POLL_MAX_BACKOFF);
-    }
-    pollTimer = setTimeout(doPoll, backoffMs);
+  function schedule() {
+    const now = Date.now();
+    const allowed = dvbiHttp.nextAllowed(url);
+    if (allowed === Infinity) { pollTimer = null; return; }
+    const wait = allowed > now
+      ? allowed - now
+      : Math.max(POLL_INTERVAL, dvbiHttp.freshFor(url));
+    pollTimer = setTimeout(doPoll, wait);
   }
 
-  pollTimer = setTimeout(doPoll, backoffMs);
+  async function doPoll() {
+    pollTimer = null;
+    const r = await dvbiHttp.get(url, { timeoutMs: 15000 });
+    if (r.ok && !r.notModified) {
+      const doc = new DOMParser().parseFromString(r.body, 'application/xml');
+      const v   = doc.documentElement?.getAttribute('version');
+      if (v && v !== currentVersion) {
+        const prevUid = currentIdx >= 0 ? services[currentIdx]?.uid : null;
+        try {
+          installServiceList(url, r.body, r.contentType); // restarts polling
+        } catch (e) {
+          console.warn('Updated service list could not be installed:', e.message);
+          schedule();
+          return;
+        }
+        if (prevUid) {
+          const ni = services.findIndex(s => s.uid === prevUid);
+          if (ni >= 0) selectService(ni);
+        }
+        showVersionNotice(`Service list updated (v${v})`);
+        return;
+      }
+    } else if (!r.ok && !r.final && !r.retryAt) {
+      // Other failures (404 and the like): no clause sets a wait, so the back-off is used.
+      dvbiHttp.backOff(url);
+    }
+    schedule();
+  }
+
+  schedule();
 }
 
 function showVersionNotice(msg) {
@@ -1682,9 +1741,9 @@ $('slr-load-btn').addEventListener('click', async () => {
   resultsEl.innerHTML = '';
   listNameEl.textContent = 'Looking up SLR…';
   try {
-    const res = await fetch(resolveUrl(registryUrl));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
+    const r = await dvbiHttp.get(registryUrl);
+    if (!r.ok) throw new Error(failureText(r));
+    const doc = new DOMParser().parseFromString(r.body, 'application/xml');
     const entries = parseSLRResponse(doc);
     if (entries) {
       if (entries.length === 1) {

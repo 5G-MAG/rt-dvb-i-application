@@ -6,6 +6,7 @@ const http    = require('http');
 const https   = require('https');
 const dns     = require('dns').promises;
 const net     = require('net');
+const os      = require('os');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
@@ -97,13 +98,69 @@ const PROXY_ALLOW_ORIGINS = new Set(
     .map(o => { try { return new URL(o).origin; } catch { return o; } })
 );
 
+async function resolveHost(u) {
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  return net.isIP(host) ? [host] : (await dns.lookup(host, { all: true })).map(a => a.address);
+}
+
 async function assertSafeUrl(rawUrl) {
   const u = new URL(rawUrl); // throws on invalid
   if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Only http/https URLs are allowed');
   if (PROXY_ALLOW_ORIGINS.has(u.origin)) return u;
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  const addrs = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true })).map(a => a.address);
+  const addrs = await resolveHost(u);
   if (!addrs.length || addrs.some(isPrivateIp)) throw new Error('URL resolves to a disallowed (private/loopback) address');
+  return u;
+}
+
+// ── HTTP over TLS (ETSI TS 103 770 V1.2.1 clause 7.3) ─────────────────────────────────────────
+// "All HTTP transactions and connections between the DVB-I client and DVB-I metadata endpoints
+// [...] shall be performed using HTTP over TLS", except: "For the specific case that a DVB-I client
+// connects to a DVB-I metadata endpoint located on the same private subnet (see clause 3 of IETF
+// RFC 1918 [27]), HTTP may be used without TLS." This server makes those connections for the
+// browser, so it is the side that can tell which subnet it is on. An http:// endpoint is fetched
+// only when every address it resolves to lies in one of the three RFC 1918 clause 3 blocks and in
+// the subnet of one of this host's own interfaces. Loopback (127.0.0.0/8) is not one of those
+// blocks, so http://localhost is refused: use https, or the host's private address.
+const RFC1918_BLOCKS = [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16]];
+
+function ipv4ToInt(ip) {
+  return ip.split('.').reduce((n, part) => (n * 256) + Number(part), 0);
+}
+
+function inPrefix(ip, base, bits) {
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return ((ipv4ToInt(ip) & mask) >>> 0) === ((ipv4ToInt(base) & mask) >>> 0);
+}
+
+function isRfc1918(ip) {
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  return net.isIPv4(ip) && RFC1918_BLOCKS.some(([base, bits]) => inPrefix(ip, base, bits));
+}
+
+// True when `ip` is an RFC 1918 address in the subnet of one of the given interfaces
+// (the shape of os.networkInterfaces()).
+function onSamePrivateSubnet(ip, interfaces = os.networkInterfaces()) {
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  if (!isRfc1918(ip)) return false;
+  for (const list of Object.values(interfaces)) {
+    for (const a of list || []) {
+      if (a.family !== 'IPv4' && a.family !== 4) continue;
+      if (!isRfc1918(a.address)) continue;
+      const bits = Number(String(a.cidr || '').split('/')[1]);
+      if (Number.isInteger(bits) && inPrefix(ip, a.address, bits)) return true;
+    }
+  }
+  return false;
+}
+
+async function assertTlsOrSameSubnet(rawUrl, interfaces) {
+  const u = new URL(rawUrl);
+  if (u.protocol !== 'http:') return u; // https passes; other schemes are refused by assertSafeUrl
+  const addrs = await resolveHost(u);
+  if (!addrs.length || !addrs.every(a => onSamePrivateSubnet(a, interfaces))) {
+    throw new Error(`${u.origin} is plain HTTP and not on this host's private subnet; ` +
+                    'TS 103 770 clause 7.3 requires HTTP over TLS (https://)');
+  }
   return u;
 }
 
@@ -132,23 +189,56 @@ async function readCapped(response) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// Request and response headers the proxy passes through, for the caching and retry rules of
+// TS 103 770 V1.2.1 clause 4.3: If-Modified-Since upstream (4.3.2.2); Last-Modified,
+// Cache-Control (4.3.2.1) and Retry-After (4.3.3.3) back to the browser.
+const FORWARD_REQUEST_HEADERS  = ['if-modified-since'];
+const FORWARD_RESPONSE_HEADERS = ['last-modified', 'cache-control', 'retry-after'];
+
+// Redirects are followed here rather than by fetch, so that every hop passes the same address and
+// TLS checks as the first. The limit is the one fetch applies itself (WHATWG Fetch, HTTP-redirect
+// fetch: "If request's redirect count is 20, then return a network error.").
+const REDIRECT_LIMIT = 20;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+async function fetchChecked(url, headers) {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    await assertTlsOrSameSubnet(current);
+    await assertSafeUrl(current);
+    const upstream = await fetch(current, { headers, redirect: 'manual' });
+    const location = upstream.headers.get('location');
+    if (!REDIRECT_STATUSES.has(upstream.status) || !location) return upstream;
+    if (hop + 1 >= REDIRECT_LIMIT) throw new Error(`more than ${REDIRECT_LIMIT} redirects`);
+    current = new URL(location, current).href;
+  }
+}
+
 // CORS proxy — lets the browser load any DVB-I service list URL
 app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
   try {
+    await assertTlsOrSameSubnet(url);
     await assertSafeUrl(url);
   } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+  const headers = { 'User-Agent': 'DVBIReceiver/1.0', Accept: 'application/xml,*/*' };
+  for (const h of FORWARD_REQUEST_HEADERS) if (req.get(h)) headers[h] = req.get(h);
   try {
-    const upstream = await fetch(url, {
-      headers: { 'User-Agent': 'DVBIReceiver/1.0', Accept: 'application/xml,*/*' },
-    });
+    const upstream = await fetchChecked(url, headers);
     // Relay the upstream status rather than always answering 200. Flattening it hid the real
     // failure: a 404 from the origin arrived as a 200 whose body was an error page, and the
     // caller reported it as unparseable content instead of as the missing document it was.
     res.status(upstream.status);
+    for (const h of FORWARD_RESPONSE_HEADERS) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    if (upstream.status === 304) return res.end();
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/xml');
-    res.send(await readCapped(upstream));
+    // end() rather than send(): send() would answer 304 by itself from the forwarded
+    // Last-Modified, which is the origin's decision to make, not this proxy's.
+    res.end(await readCapped(upstream));
   } catch (e) {
     logger.warn('proxy fetch failed', { url, error: String(e.message || e) });
     res.status(502).json({ error: String(e) });
@@ -192,4 +282,4 @@ function startServer() {
 
 if (require.main === module) startServer();
 
-module.exports = { app, startServer, isPrivateIp, assertSafeUrl };
+module.exports = { app, startServer, isPrivateIp, assertSafeUrl, isRfc1918, onSamePrivateSubnet, assertTlsOrSameSubnet };

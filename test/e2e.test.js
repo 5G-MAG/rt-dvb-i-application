@@ -1,17 +1,21 @@
 // Browser E2E smoke test using Playwright (raw API, not @playwright/test, to keep the toolchain
 // uniform with the rest of the suite — assertions still go through node:test).
-// Serves the receiver's own public/ folder plus a compliant fixture service list on one ephemeral
-// port (same-origin) so the test exercises real parsing/rendering without weakening the SSRF guard
-// on /proxy (which correctly blocks localhost — see server.js isPrivateIp).
+// Serves the receiver itself (server.js: public/ and /proxy) plus compliant fixture service lists on
+// one ephemeral HTTPS port (same-origin) so the test exercises real parsing/rendering without
+// weakening the SSRF guard on /proxy (which correctly blocks localhost — see server.js isPrivateIp).
+// HTTPS because TS 103 770 V1.2.1 clause 7.3 has the client refuse plain HTTP to a metadata endpoint
+// that is not on its private subnet, which loopback is not; the certificate is a throwaway one.
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'error';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const express = require('express');
+const https = require('https');
+const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl;
+const hits = { cg404List: 0, cg404Guide: 0 };
 let playwright;
 try { playwright = require('playwright'); }
 catch { /* handled in before() */ }
@@ -82,14 +86,38 @@ function fixture5gXml(base) {
 </ServiceList>`;
 }
 
+// One service whose only ContentGuideSource answers 404.
+function fixtureCg404Xml(base) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023"
+  id="tag:dvbi.example,2024:servicelist:cg404" version="1" xml:lang="en">
+  <Name>Guide 404 List</Name>
+  <ProviderName>Sample Provider</ProviderName>
+  <ContentGuideSource CGSID="gone">
+    <ProviderName>Sample EPG</ProviderName>
+    <ScheduleInfoEndpoint contentType="application/xml"><dvbisd-t:URI>${base}/epg/gone</dvbisd-t:URI></ScheduleInfoEndpoint>
+  </ContentGuideSource>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:cg404</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DASHDeliveryParameters>
+        <UriBasedLocation contentType="application/dash+xml"><dvbisd-t:URI>${base}/dash/x.mpd</dvbisd-t:URI></UriBasedLocation>
+      </DASHDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>Guide Gone</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+</ServiceList>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
-  const app = express();
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  server = app.listen(0);
+  const { app } = require('../server.js');
+  server = https.createServer(makeCertificate(), app).listen(0, '127.0.0.1');
   await new Promise(r => server.once('listening', r));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  baseUrl = `https://127.0.0.1:${server.address().port}`;
 
   // Rewrite the fixture's placeholder EPG hosts to this ephemeral test server (port is only known
   // at runtime), so ContentGuideSource/customEpgUrl point at real, same-origin EPG endpoints.
@@ -100,6 +128,12 @@ before(async () => {
   app.get('/epg/schedule', (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/epg/nownext',  (req, res) => res.type('application/xml').send(fixtureEpgXml()));
   app.get('/service-list-5g.xml', (req, res) => res.type('application/xml').send(fixture5gXml(baseUrl)));
+  // A list whose content guide answers 404, to check the re-acquisition of clause 4.3.3.4.
+  app.get('/service-list-cg404.xml', (req, res) => {
+    hits.cg404List++;
+    res.type('application/xml').send(fixtureCg404Xml(baseUrl));
+  });
+  app.get('/epg/gone', (req, res) => { hits.cg404Guide++; res.status(404).end(); });
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
   // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
@@ -114,7 +148,7 @@ before(async () => {
   const extraArgs = (process.env.CHROMIUM_ARGS || '').split(/\s+/).filter(Boolean);
   const opts = engine === 'chromium' && extraArgs.length ? { args: extraArgs } : {};
   browser = await playwright[engine].launch(opts);
-  page = await browser.newPage();
+  page = await browser.newPage({ ignoreHTTPSErrors: true });
 
   // The suite is hermetic: everything not served by the test server above is aborted. The receiver
   // pulls dash.js, hls.js and a web font from public CDNs, and those are <script> elements in the
@@ -296,4 +330,29 @@ test('5G Broadcast instances are badged with their checked mbms:// signalling', 
   const bad = page.locator('.ch-card:has(.ch-name:text("Bad 5G"))');
   assert.ok(await bad.locator('.ch-badge-5g-bad').count(), 'an invalid locator is marked as such');
   assert.match(await bad.locator('.ch-badge-5g').getAttribute('data-tooltip'), /signalling is wrong/);
+});
+
+// TS 103 770 V1.2.1 clause 7.3: plain HTTP to a metadata endpoint that is not on the client's private
+// subnet is refused, and the user is told why. Loopback is not an RFC 1918 subnet.
+test('a service list over plain HTTP off the private subnet is refused, with the reason', { skip: !playwright }, async () => {
+  const port = new URL(baseUrl).port;
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(`http://127.0.0.1:${port}/service-list.xml`)}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-error', { timeout: 10000 });
+  assert.equal((await page.textContent('#list-name')).trim(), 'Load failed');
+  assert.match(await page.textContent('.ch-error'), /HTTP 400: .*clause 7\.3/);
+});
+
+// TS 103 770 V1.2.1 clause 4.3.3.4: a 404 from a ContentGuideSource URL makes the client re-acquire the
+// service list; a 404 again after that backs off rather than repeating the request.
+test('a 404 from the content guide re-acquires the service list once, then backs off', { skip: !playwright }, async () => {
+  hits.cg404List = 0; hits.cg404Guide = 0;
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-cg404.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Guide Gone")', { timeout: 10000 });
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && (hits.cg404List < 2 || hits.cg404Guide < 2)) await new Promise(r => setTimeout(r, 100));
+  assert.equal(hits.cg404List, 2, 'the list is requested again after the guide 404');
+  assert.equal(hits.cg404Guide, 2, 'the guide is requested again after the re-acquisition');
+  await new Promise(r => setTimeout(r, 1500));
+  assert.equal(hits.cg404Guide, 2, 'a second 404 is not followed by an immediate repeat');
+  assert.equal(hits.cg404List, 2, 'and the list is not re-acquired again');
 });

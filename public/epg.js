@@ -141,30 +141,28 @@ const DVBIEpg = (() => {
     return events.filter(e => { const k = e.start.getTime(); return seen.has(k) ? false : (seen.add(k), true); });
   }
 
-  // `endpoint` must be the RAW absolute URL straight from the service list XML (no proxy-wrapping
-  // yet). Query params are appended to that absolute URL first, and only the FULLY-QUALIFIED
-  // target URL is passed through resolveUrl() (app.js) for the same-origin/proxy decision.
-  // Resolving first and appending params after (the old order) breaks the proxy case: resolveUrl()
-  // returns a relative "/proxy?url=..." string for cross-origin endpoints, which (a) fails the old
-  // http(s)-only guard below outright, and (b) even if allowed through, appending "?sid=..." to an
-  // already-`?url=`-bearing string puts those params on the /proxy request itself, not on the
-  // target URL — the receiver's own /proxy handler only forwards its `url` param, so sid/start/end
-  // would be silently dropped even if the guard let the request through.
-  async function load(endpoint, serviceId) {
-    if (!endpoint) return null;
+  // `endpoint` must be the RAW absolute URL straight from the service list XML. Query params are
+  // appended to it first; the client resolves the full URL (same origin or proxy) afterwards, so
+  // the params reach the target rather than the /proxy request.
+  // `client` is a DVBIHttp client (dvbi-http.js), which applies the caching and retry rules of
+  // TS 103 770 V1.2.1 clause 4.3 that clauses 6.2.3 and 6.2.4 refer to. The retry state is kept
+  // per endpoint and service (requestKey), since the time parameters move with the clock.
+  // Resolves to { events, result }: events is null when the request failed or the body is not a
+  // TV-Anytime document, and result is the client's answer.
+  async function load(endpoint, serviceId, client) {
+    if (!endpoint) return { events: null, result: null };
     // sid is the spec-compliant parameter (TS 103 770 §6.5.2.2); serviceId kept for backward compat
     const now = Math.floor(Date.now() / 1000);
     const params = new URLSearchParams({ sid: serviceId, serviceId, start: String(now - 3600), end: String(now + 12 * 3600) });
     const fullUrl = `${endpoint}${endpoint.includes('?') ? '&' : '?'}${params.toString()}`;
-    const target = typeof resolveUrl === 'function' ? resolveUrl(fullUrl) : fullUrl;
-    const res = await fetch(target, {
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) return null;
-    const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
-    if (doc.querySelector('parsererror')) return null;
-    return parseTVA(doc);
+    const result = await client.get(fullUrl, { key: requestKey(endpoint, serviceId), timeoutMs: 10000 });
+    if (!result.ok) return { events: null, result };
+    const doc = new DOMParser().parseFromString(result.body, 'application/xml');
+    if (doc.querySelector('parsererror')) return { events: null, result };
+    return { events: parseTVA(doc), result };
   }
+
+  function requestKey(endpoint, serviceId) { return `${endpoint}|${serviceId}`; }
 
   function getNowNext(events) {
     const now = new Date();
@@ -385,7 +383,7 @@ const DVBIEpg = (() => {
     }
   }
 
-  return { load, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration };
+  return { load, requestKey, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration };
 })();
 
 // Exposed for Node-based unit tests (test/epg.test.js). `module` is undefined when loaded via a
