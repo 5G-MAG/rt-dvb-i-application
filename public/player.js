@@ -12,6 +12,9 @@ const DVBIPlayer = (() => {
     'urn:uuid:94ce86fb-07ff-4f43-adb8-93d2fa968ca2': 'com.apple.fps.1_0',
     'urn:uuid:1077efec-c0b2-4d02-ace3-3c1e52e2fb4b': 'org.w3.clearkey',
   };
+  // The EME key system this player maps a DRMSystemId to, or null when it knows none.
+  function knownKeySystem(id) { return _DRM_SYSTEMS[String(id || '').toLowerCase()] || null; }
+
   function _keySystem(id) {
     if (!id || id === 'none') return null;
     return _DRM_SYSTEMS[id.toLowerCase()] || id;
@@ -303,6 +306,6 @@ const DVBIPlayer = (() => {
 
   return {
     play, stop, getBitrate, getTracks, setAudioTrack, setSubtitleTrack,
-    isLiveTimeshift, generateSessionId, setCMCDSession,
+    isLiveTimeshift, generateSessionId, setCMCDSession, knownKeySystem,
   };
 })();

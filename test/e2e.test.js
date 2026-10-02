@@ -111,6 +111,51 @@ function fixtureCg404Xml(base) {
 </ServiceList>`;
 }
 
+// Instance precedence (clause 5.2.13): "Timed" has an instance with no @priority, so priority 0, that
+// is on air for a few seconds from the moment the list is served, and a priority 5 instance that is
+// always on air; "Locked" has one instance under conditional access only and one under a DRM system
+// the player does not know, so neither can play in a browser.
+function fixtureSelectXml(base) {
+  const until = new Date(Date.now() + 4000).toISOString();
+  const dash = name => `<DASHDeliveryParameters><UriBasedLocation contentType="application/dash+xml"><dvbisd-t:URI>${base}/dash/${name}.mpd</dvbisd-t:URI></UriBasedLocation></DASHDeliveryParameters>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023"
+  id="tag:dvbi.example,2024:servicelist:select" version="1" xml:lang="en">
+  <Name>Selection List</Name>
+  <ProviderName>Sample Provider</ProviderName>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:timed</UniqueIdentifier>
+    <ServiceInstance priority="5">
+      <DisplayName>Timed Late</DisplayName>
+      ${dash('late')}
+    </ServiceInstance>
+    <ServiceInstance>
+      <DisplayName>Timed Early</DisplayName>
+      <Availability><Period validTo="${until}"/></Availability>
+      ${dash('early')}
+    </ServiceInstance>
+    <ServiceName>Timed</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:locked</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <ContentProtection><CASystemId>0x0B00</CASystemId></ContentProtection>
+      ${dash('ca')}
+    </ServiceInstance>
+    <ServiceInstance priority="2">
+      <ContentProtection>
+        <DRMSystemId encryptionScheme="cbcs">urn:uuid:00000000-0000-0000-0000-000000000000</DRMSystemId>
+      </ContentProtection>
+      ${dash('drm')}
+    </ServiceInstance>
+    <ServiceName>Locked</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+</ServiceList>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -134,6 +179,7 @@ before(async () => {
     res.type('application/xml').send(fixtureCg404Xml(baseUrl));
   });
   app.get('/epg/gone', (req, res) => { hits.cg404Guide++; res.status(404).end(); });
+  app.get('/service-list-select.xml', (req, res) => res.type('application/xml').send(fixtureSelectXml(baseUrl)));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
   // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
@@ -203,10 +249,14 @@ test('receiver loads a service list and renders channels from it', { skip: !play
 test('selecting a channel updates the toolbar name', { skip: !playwright }, async () => {
   // Beta Radio has no subscriptionPackage, so selection is immediate (no gate modal to dismiss
   // first) — Alpha One in the fixture is gated and would need that separate interaction tested).
+  // The toolbar shows the playing instance's DisplayName (TS 103 770 V1.2.1 clause 5.5.4, table 16),
+  // "Beta HLS", where the browser can play HLS natively; the service name where no instance can play
+  // (hls.js is not loaded in this suite, and the other instance is multicast).
   await page.click('.ch-card:has(.ch-name:text("Beta Radio"))');
-  await page.waitForSelector('#tb-name:has-text("Beta Radio")', { timeout: 5000 });
+  await page.waitForSelector('#tb-name:text-matches("^Beta (Radio|HLS)$")', { timeout: 5000 });
   const tbName = (await page.textContent('#tb-name')).trim();
-  assert.equal(tbName, 'Beta Radio');
+  const nativeHls = await page.evaluate(() => document.createElement('video').canPlayType('application/vnd.apple.mpegurl') !== '');
+  assert.equal(tbName, nativeHls ? 'Beta HLS' : 'Beta Radio');
   assert.ok(await page.$('.ch-card.active:has(.ch-name:text("Beta Radio"))'), 'clicked card should get the .active class');
 });
 
@@ -355,4 +405,35 @@ test('a 404 from the content guide re-acquires the service list once, then backs
   await new Promise(r => setTimeout(r, 1500));
   assert.equal(hits.cg404Guide, 2, 'a second 404 is not followed by an immediate repeat');
   assert.equal(hits.cg404List, 2, 'and the list is not re-acquired again');
+});
+
+// TS 103 770 V1.2.1 clause 5.2.13. The media player is replaced by a recorder (the suite has no
+// dash.js, and Playwright's Chromium has no H.264), so what is checked is which instance the client
+// hands to the player, and when.
+test('instance precedence: @priority default 0, DisplayName, re-evaluation at the end of scheduled hours', { skip: !playwright }, async () => {
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-select.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Timed")', { timeout: 10000 });
+  await page.evaluate(() => {
+    window.dashjs = window.dashjs || {};
+    window.__plays = [];
+    DVBIPlayer.play = (video, url) => { window.__plays.push(url); };
+  });
+  await page.click('.ch-card:has(.ch-name:text("Timed"))');
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match(await page.evaluate(() => window.__plays[0]), /early\.mpd$/, 'the instance without @priority (0) comes before priority 5');
+  assert.equal((await page.textContent('#tb-name')).trim(), 'Timed Early', 'the playing instance\'s DisplayName is shown');
+
+  await page.waitForFunction(() => window.__plays.length === 2, null, { timeout: 8000 });
+  assert.match(await page.evaluate(() => window.__plays[1]), /late\.mpd$/, 'leaving its scheduled hours hands over to the next instance');
+  assert.equal((await page.textContent('#tb-name')).trim(), 'Timed Late');
+});
+
+test('instances that cannot play in a browser are discarded before any is tried', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await page.click('.ch-card:has(.ch-name:text("Locked"))');
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  const msg = (await page.textContent('#play-error-msg')).trim();
+  assert.match(msg, /conditional access only/);
+  assert.match(msg, /DRM systems this client does not know/);
+  assert.equal(await page.evaluate(() => window.__plays.length), 0, 'nothing was handed to the player');
 });

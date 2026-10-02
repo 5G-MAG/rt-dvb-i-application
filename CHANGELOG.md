@@ -1,5 +1,20 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Service instance precedence per TS 103 770 V1.2.1 clause 5.2.13
+
+- **Availability is per instance** (`public/instances.js`): every Period and Interval of an
+  instance's `Availability` is read (days, recurrence from the week of `@validFrom`, times past
+  midnight), instances outside their scheduled hours are not tried, and the selected instance is
+  re-evaluated when one of them enters or leaves its hours. A service is off air only when all of
+  its instances are, and the message says when it is back.
+- **Instances known not to play are discarded before trying**: multicast, DASH or HLS without a
+  player, conditional access only, DRM without EME, or DRM systems the player does not know.
+- **`@priority` defaults to 0**, as the schema says, not 99; on an error, precedence is applied
+  again without the failed instance.
+- **The playing instance's `DisplayName`** is shown in the toolbar and overlay.
+- **ContentProtection**: every `DRMSystemId` of an element is read, with its `@encryptionScheme`,
+  and `CASystemId` is read.
+
 ## 2026-10 — HTTP behaviour and TLS per TS 103 770 V1.2.1 clauses 4.3 and 7.3
 
 - **One HTTP client for every DVB-I request** (`public/dvbi-http.js`): service lists, the registry

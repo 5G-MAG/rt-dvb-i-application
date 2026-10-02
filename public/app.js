@@ -421,6 +421,39 @@ function rebuildLCNs() {
 
 // ── Service list parsing ──────────────────────────────────────────────────────
 
+// Availability of a service instance (clause 5.5.15, table 26) as the model of instances.js, or null
+// when there is none. Times of day are Zulu (clause 5.5.17), so they are read as UTC.
+function parseAvailability(el) {
+  if (!el) return null;
+  const time = (v, dflt) => {
+    const m = String(v || '').match(/^(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)Z$/);
+    return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 : dflt;
+  };
+  const instant = v => { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null; };
+  const periods = [];
+  for (const p of el.getElementsByTagNameNS('*', 'Period')) {
+    const intervals = [];
+    for (const iv of p.getElementsByTagNameNS('*', 'Interval')) {
+      const days = (iv.getAttribute('days') || '1 2 3 4 5 6 7').trim().split(/\s+/).map(Number).filter(d => d >= 1 && d <= 7);
+      const rec = iv.getAttribute('recurrence');
+      intervals.push({
+        days,
+        recurrence: Math.max(1, parseInt(rec || '1', 10) || 1),
+        recurrenceGiven: rec != null,
+        start: time(iv.getAttribute('startTime'), 0),
+        end: time(iv.getAttribute('endTime'), 86399999),   // schema default 23:59:59.999Z
+      });
+    }
+    // validFrom/validTo per clause 5.5.15; also accept the old start/end attributes
+    periods.push({
+      validFrom: instant(p.getAttribute('validFrom') || p.getAttribute('start')),
+      validTo:   instant(p.getAttribute('validTo')   || p.getAttribute('end')),
+      intervals,
+    });
+  }
+  return { periods };
+}
+
 function parseServiceList(doc) {
   // Detect DVB-I namespace from root element — supports 2019, 2021, 2024 and future versions
   const _rootNs = doc.documentElement?.namespaceURI || '';
@@ -558,8 +591,12 @@ function parseServiceList(doc) {
     // 5G Broadcast and its signalling checked (see mbms-url.js).
     let mbms5g = null;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
-      const priority = parseInt(inst.getAttribute('priority') || '99', 10);
+      // "<attribute name="priority" type="nonNegativeInteger" default="0"/>" (clause 5.5.4)
+      const priority = parseInt(inst.getAttribute('priority') || '0', 10) || 0;
+      // DisplayName names the service for this instance; "When not present, ServiceName is used."
+      // (clause 5.5.4, table 16)
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
+      const availability = parseAvailability(inst.getElementsByTagNameNS(NS, 'Availability')[0]);
 
       // Broadcast-only delivery (DVB-T/S/C tuning triplet, TS 103 770 §5.5.18 Delivery Parameters) — a browser has no TV tuner,
       // so these never yield a playable instance. Tracked so the service can still be listed
@@ -589,24 +626,37 @@ function parseServiceList(doc) {
         ?.getElementsByTagNameNS(NS_TVA, 'Carriage')[0]
         ?.getAttribute('href') || '').split(':').pop() || null;
 
-      // Multi-DRM: collect all ContentProtection/DRMSystemId pairs (A184r2 §4.10)
+      // ContentProtection (clause 5.5.20): every CASystemId and every DRMSystemId with its
+      // @encryptionScheme, any number of each per element. Table 103 marks all three for IP-only
+      // receivers, which identify "whether content is protected and whether the receiver supports
+      // the content protection scheme used or not" (clause 8.5.1, NOTE 3).
       let protection = null;
       const allSystems = {};
+      const schemes = {};
+      const caSystems = [];
       for (const cp of inst.getElementsByTagNameNS(NS, 'ContentProtection')) {
-        const drmEl = cp.getElementsByTagNameNS(NS, 'DRMSystemId')[0];
         const licEl = cp.getElementsByTagNameNS(NS, 'LicenseServerURL')[0];
-        if (drmEl) allSystems[drmEl.textContent.trim()] = licEl?.textContent.trim() || '';
+        for (const drmEl of cp.getElementsByTagNameNS(NS, 'DRMSystemId')) {
+          const id = drmEl.textContent.trim();
+          if (!id) continue;
+          allSystems[id] = licEl?.textContent.trim() || '';
+          schemes[id] = drmEl.getAttribute('encryptionScheme') || '';
+        }
+        for (const caEl of cp.getElementsByTagNameNS(NS, 'CASystemId')) {
+          const id = caEl.textContent.trim();
+          if (id) caSystems.push(id);
+        }
       }
       const sysPairs = Object.entries(allSystems);
-      if (sysPairs.length) {
-        protection = { system: sysPairs[0][0], licenseUrl: sysPairs[0][1], allSystems };
+      if (sysPairs.length || caSystems.length) {
+        protection = { system: sysPairs[0]?.[0] || null, licenseUrl: sysPairs[0]?.[1] || '', allSystems, schemes, caSystems };
       }
 
       const dash = inst.getElementsByTagNameNS(NS, 'DASHDeliveryParameters')[0];
       if (dash) {
         const url = uriText(dash); // URI may be dvbisd-t:URI (types ns) or legacy <URI>
         const origSource = dash.getElementsByTagNameNS('*', 'OriginalDeliverySource')[0]?.textContent.trim() || null;
-        if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage });
+        if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage, availability });
       }
 
       // 5G Broadcast: IdentifierBasedDeliveryParameters holding an mbms:// locator, which TS 103 770
@@ -646,7 +696,7 @@ function parseServiceList(doc) {
         const extUrl = uriEl?.textContent.trim();
         if (extUrl && mimeType) {
           const knownType = ['application/vnd.apple.mpegurl', 'application/dash+xml'].includes(mimeType) ? mimeType : null;
-          if (knownType) instances.push({ priority, label, url: extUrl, type: knownType, hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, extensionName: extAttr || null });
+          if (knownType) instances.push({ priority, label, url: extUrl, type: knownType, hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, extensionName: extAttr || null, availability });
         }
       }
 
@@ -665,7 +715,7 @@ function parseServiceList(doc) {
           const u = uriText(mc);
           if (u) mcUrl = u;
         }
-        if (mcUrl) instances.push({ priority, label, url: mcUrl, type: 'multicast', hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage });
+        if (mcUrl) instances.push({ priority, label, url: mcUrl, type: 'multicast', hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, availability });
       }
     }
 
@@ -690,22 +740,6 @@ function parseServiceList(doc) {
       }
     }
 
-    // Availability window
-    let available = true;
-    let availableFrom = null, availableTo = null;
-    const availEl = svc.getElementsByTagNameNS(NS, 'Availability')[0];
-    if (availEl) {
-      const period = availEl.getElementsByTagNameNS(NS, 'Period')[0];
-      if (period) {
-        const now   = Date.now();
-        // validFrom/validTo per TS 103 770 §5.5.15; also accept old start/end attributes
-        const start = period.getAttribute('validFrom') || period.getAttribute('start');
-        const end   = period.getAttribute('validTo')   || period.getAttribute('end');
-        if (start) { availableFrom = start; if (now < new Date(start).getTime()) available = false; }
-        if (end)   { availableTo   = end;   if (now > new Date(end).getTime())   available = false; }
-      }
-    }
-
     // Subscription package
     const subPkgEl = svc.getElementsByTagNameNS(NS, 'SubscriptionPackage')[0];
     const subscriptionPackage = subPkgEl ? subPkgEl.textContent.trim() : null;
@@ -721,13 +755,12 @@ function parseServiceList(doc) {
       name: aspEl.getAttribute('extensionName') || '',
     } : null;
 
-    instances.sort((a, b) => a.priority - b.priority);
     // A service with a real ServiceInstance but zero playable (IP-deliverable) instances is kept
     // in the list — noIpDelivery lets the UI show it as broadcast-only rather than hiding it.
     const instanceCount = svc.getElementsByTagNameNS(NS, 'ServiceInstance').length;
     const noIpDelivery = instances.length === 0 && instanceCount > 0;
     if (displayName && (instances.length || noIpDelivery)) {
-      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, available, availableFrom, availableTo, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g });
+      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g });
     }
   }
 
@@ -928,7 +961,7 @@ function renderChannelList() {
       ? `<span class="ch-badge ch-badge-sub" data-tooltip="Subscription required: ${esc(svc.subscriptionPackage)}">SUB</span>`
       : (!svc.subscriptionPackage && svc.serviceRestriction && svc.serviceRestriction !== 'none'
           ? `<span class="ch-badge ch-badge-sub" data-tooltip="${svc.serviceRestriction === 'subscription' ? 'Subscription required' : 'Conditional access required'}">${svc.serviceRestriction === 'subscription' ? 'SUB' : 'CA'}</span>` : '');
-    const unavailableTag = svc.available === false ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
+    const unavailableTag = serviceOffAir(svc) ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
     const broadcastTag = svc.noIpDelivery
       ? `<span class="ch-badge ch-badge-mc" data-tooltip="${svc.hasBroadcastDelivery ? 'Broadcast delivery only (DVB-T/S/C) — no broadband stream listed, cannot play in a browser' : svc.mbms5g ? '5G Broadcast only — a browser cannot reach an MBMS Client' : 'No playable delivery method listed for this service'}">${svc.hasBroadcastDelivery || !svc.mbms5g ? 'Broadcast only' : '5G only'}</span>`
       : '';
@@ -955,7 +988,7 @@ function renderChannelList() {
     ].join('');
 
     const li = document.createElement('li');
-    li.className = svc.available === false ? 'ch-card unavailable'
+    li.className = serviceOffAir(svc) ? 'ch-card unavailable'
       : svc.noIpDelivery ? 'ch-card no-delivery' : 'ch-card';
     li.dataset.idx = idx;
     li.setAttribute('role', 'option');
@@ -1027,15 +1060,78 @@ function nextVisibleIdx(dir) {
 
 // ── Service selection + delivery fallback ─────────────────────────────────────
 
+// What this browser can play, so that instances known not to play are discarded before they are
+// tried (clause 5.2.13). A DRM system counts only if the player maps it to an EME key system; whether
+// the browser's CDM accepts that key system and @encryptionScheme is learnt from playback, since the
+// EME capability query needs codecs, which the service list does not carry.
+function playbackCaps() {
+  const mse = !!(window.MediaSource || window.ManagedMediaSource);
+  return {
+    dash: typeof dashjs !== 'undefined' && mse,
+    hls: (typeof Hls !== 'undefined' && Hls.isSupported()) || videoEl.canPlayType('application/vnd.apple.mpegurl') !== '',
+    eme: typeof navigator.requestMediaKeySystemAccess === 'function',
+    keySystem: DVBIPlayer.knownKeySystem,
+  };
+}
+
+// Off air: every instance is outside its scheduled service hours (clause 5.2.5.3).
+function serviceOffAir(svc, ms = Date.now()) {
+  return svc.instances.length > 0 && !svc.instances.some(i => DVBIInstances.isAvailable(i.availability, ms));
+}
+
+function nextAvailabilityChange(svc, ms = Date.now()) {
+  const times = svc.instances.map(i => DVBIInstances.nextChange(i.availability, ms)).filter(t => t != null);
+  return times.length ? Math.min(...times) : null;
+}
+
+// Instances that failed during the current selection, skipped when precedence is re-evaluated.
+let failedInstances = new Set();
+let availabilityTimer = null;
+let offAirShown = false;
+const MAX_TIMEOUT_MS = 2147483647; // setTimeout fires at once for longer delays, so wait in steps
+
+// "When one of the service instances of the currently selected service changes from being inside
+// their scheduled service hours to being outside or vice-versa, the selected service instance shall
+// be re-evaluated." (clause 5.2.13)
+function scheduleReevaluation(svcIdx) {
+  clearTimeout(availabilityTimer);
+  const svc = services[svcIdx];
+  const at = svc && nextAvailabilityChange(svc);
+  if (at == null) return;
+  availabilityTimer = setTimeout(() => {
+    if (svcIdx !== currentIdx || isCatchup) return;
+    if (Date.now() < at) { scheduleReevaluation(svcIdx); return; }
+    reevaluateInstance(svcIdx);
+  }, Math.min(Math.max(0, at - Date.now()), MAX_TIMEOUT_MS));
+}
+
+function reevaluateInstance(svcIdx) {
+  const svc = services[svcIdx];
+  if (!svc) return;
+  if (offAirShown || serviceOffAir(svc)) { selectService(svcIdx); return; }
+  const best = DVBIInstances.candidates(svc.instances, Date.now(), playbackCaps(), failedInstances)[0];
+  if (best !== currentInstIdx) {
+    currentSession++;
+    tryInstance(svcIdx, currentSession);
+  } else {
+    scheduleReevaluation(svcIdx);
+  }
+}
+
 function selectService(idx) {
   if (!services.length) return;
   idx = Math.max(0, Math.min(idx, services.length - 1));
 
   const svc = services[idx];
 
+  failedInstances = new Set();
+  offAirShown = false;
+  clearTimeout(availabilityTimer);
+
   // Availability check first — no point prompting PIN for an off-air service
-  if (svc.available === false) {
+  if (serviceOffAir(svc)) {
     currentIdx = idx;
+    offAirShown = true;
     document.querySelectorAll('.ch-card').forEach(el => {
       const active = parseInt(el.dataset.idx, 10) === idx;
       el.classList.toggle('active', active);
@@ -1052,11 +1148,10 @@ function selectService(idx) {
     isCatchup = false;
     backToLiveBtn.hidden = true;
     playError.hidden = false;
-    const fromStr = svc.availableFrom ? `from ${new Date(svc.availableFrom).toLocaleDateString()}` : '';
-    const toStr   = svc.availableTo   ? `until ${new Date(svc.availableTo).toLocaleDateString()}`   : '';
-    const avWindow = [fromStr, toStr].filter(Boolean).join(' ');
-    playErrorMsg.textContent = `Service off-air${avWindow ? ` (available ${avWindow})` : ''}`;
+    const back = nextAvailabilityChange(svc);
+    playErrorMsg.textContent = `Service off-air${back ? ` (back on air ${new Date(back).toLocaleString()})` : ''}`;
     loadServiceEPG(idx);
+    scheduleReevaluation(idx);
     return;
   }
 
@@ -1120,40 +1215,42 @@ function selectService(idx) {
   if (svc.lcn != null) { tbLcn.textContent = `CH ${svc.lcn}`; tbLcn.hidden = false; }
   else tbLcn.hidden = true;
   tbNow.hidden = true;
-  showOverlay(svc, svc.instances[0]);
+  showOverlay(svc, null);
   loadServiceEPG(idx);
-  tryInstance(idx, 0, session);
+  tryInstance(idx, session);
 }
 
-function tryInstance(svcIdx, instIdx, session) {
+// Plays the instance that comes first by precedence (clause 5.2.13) among those not yet failed in
+// this selection; on a non-recoverable error that instance is set aside and precedence is applied
+// again.
+function tryInstance(svcIdx, session) {
   if (svcIdx !== currentIdx || session !== currentSession) return;
 
   const svc = services[svcIdx];
-  if (instIdx >= svc.instances.length) {
+  const caps = playbackCaps();
+  const instIdx = DVBIInstances.candidates(svc.instances, Date.now(), caps, failedInstances)[0];
+  scheduleReevaluation(svcIdx);
+  if (instIdx === undefined) {
+    DVBIPlayer.stop();
     bufSpinner.hidden = true;
     playError.hidden  = false;
+    const reasons = svc.instances
+      .filter((inst, i) => !failedInstances.has(i) && DVBIInstances.isAvailable(inst.availability, Date.now()))
+      .map(inst => DVBIInstances.cannotPlay(inst, caps))
+      .filter(Boolean);
     const hasProtected = svc.instances.some(i => i.protection != null);
-    playErrorMsg.textContent = hasProtected
-      ? 'DRM-protected stream — CDM not available in this browser'
-      : `All ${svc.instances.length} stream${svc.instances.length > 1 ? 's' : ''} unavailable`;
+    playErrorMsg.textContent = reasons.length
+      ? `No instance of this service can play in this browser: ${[...new Set(reasons)].join('; ')}`
+      : hasProtected
+        ? 'DRM-protected stream — CDM not available in this browser'
+        : `All ${svc.instances.length} stream${svc.instances.length > 1 ? 's' : ''} unavailable`;
     return;
   }
 
   const delivery = svc.instances[instIdx];
-
-  // Multicast cannot be played in a browser — skip to next instance
-  if (delivery.type === 'multicast') {
-    if (instIdx + 1 < svc.instances.length) {
-      tryInstance(svcIdx, instIdx + 1, session);
-    } else {
-      bufSpinner.hidden = true;
-      playError.hidden  = false;
-      playErrorMsg.textContent = 'Multicast-only service — not supported in browsers';
-    }
-    return;
-  }
-
   currentInstIdx = instIdx;
+  tbName.textContent = delivery.label;
+  overlayName.textContent = delivery.label;
   updateDeliveryBadge(delivery, instIdx, svc.instances.length);
   bufSpinner.hidden = false;
   playError.hidden  = true;
@@ -1165,17 +1262,9 @@ function tryInstance(svcIdx, instIdx, session) {
     () => {
       if (svcIdx !== currentIdx || session !== currentSession) return;
       bufSpinner.hidden = true;
-      const next = instIdx + 1;
-      if (next < svc.instances.length) {
-        console.warn(`Instance ${instIdx + 1}/${svc.instances.length} failed, trying next…`);
-        tryInstance(svcIdx, next, session);
-      } else {
-        playError.hidden = false;
-        const hasProtected = svc.instances.some(i => i.protection != null);
-        playErrorMsg.textContent = hasProtected
-          ? 'DRM-protected stream — CDM not available in this browser'
-          : `All ${svc.instances.length} stream${svc.instances.length > 1 ? 's' : ''} unavailable`;
-      }
+      console.warn(`Instance ${instIdx + 1}/${svc.instances.length} failed, applying precedence again…`);
+      failedInstances.add(instIdx);
+      tryInstance(svcIdx, session);
     },
     // onBuffer
     (isBuffering) => {
