@@ -3,16 +3,16 @@
    Drop-in stylesheet. Pair with the markup in blue-bar.html.
 
    Brand blue: rgb(0,160,210)
-   Font:       Poppins (loaded via @import below; remove if you
+   Font:       Ubuntu (loaded via @import below; remove if you
                already load it elsewhere)
    ──────────────────────────────────────────────────────────── */
 
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;500;700&display=swap');
 
 :root {
   --bluebar-bg:    rgb(0, 160, 210);
   --bluebar-text:  #ffffff;
-  --bluebar-font:  'Poppins', system-ui, sans-serif;
+  --bluebar-font:  'Ubuntu', system-ui, sans-serif;
   --bluebar-height: 76px;
 }
 
