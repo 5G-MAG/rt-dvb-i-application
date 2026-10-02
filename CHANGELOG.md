@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — No error for an XML AIT without an executable application (TS 103 770 V1.2.1 clause 5.2.4.2)
+
+- **The toolbar application is offered only once it has been resolved**: an XML AIT is read first,
+  and the button appears when it gives an application this client can start. When it gives none,
+  the application is not offered and no error is shown; the service keeps playing.
+
 ## 2026-10 — Controlling applications this client cannot start (TS 103 770 V1.2.1 clauses 5.2.13, 5.2.3.2)
 
 - **An instance whose application controlling media presentation is of a type this client cannot

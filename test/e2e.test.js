@@ -212,6 +212,8 @@ function fixtureHandlingXml(base) {
     <ServiceInstance priority="0">${app('1.2', `${base}/app/controlling.apk`, 'application/vnd.android.package-archive')}${dash('apptypeignored')}</ServiceInstance>
     <ServiceInstance priority="1">${dash('apptypefallback')}</ServiceInstance>`)}${
   service('apptypeonly', 'App Type Only', `<ServiceInstance>${app('1.2', `${base}/app/controlling.apk`, 'application/vnd.android.package-archive')}${dash('apptypeonlyignored')}</ServiceInstance>`)}${
+  service('aittb', 'AIT Toolbar', `<ServiceInstance>${app('1.1', `${base}/app/ait-slow.xml`, 'application/vnd.dvb.ait+xml')}${dash('aittb')}</ServiceInstance>`)}${
+  service('aittbnone', 'AIT Toolbar None', `<ServiceInstance>${app('1.1', `${base}/app/ait-hbbtv.xml`, 'application/vnd.dvb.ait+xml')}${dash('aittbnone')}</ServiceInstance>`)}${
   service('vod', 'VoD', `<ServiceInstance>${dash('vod')}<RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2"/><tva:MediaLocator><tva:MediaUri contentType="image/png">${base}/img/finished.png</tva:MediaUri></tva:MediaLocator></RelatedMaterial></ServiceInstance>`)}
 </ServiceList>`.replace(/<ServiceInstance([^>]*)>([\s\S]*?)<\/ServiceInstance>/g, (m, attrs, inner) => {
     // Schema order inside ServiceInstance: RelatedMaterial before delivery parameters.
@@ -420,6 +422,7 @@ before(async () => {
   app.get('/service-list-handling.xml', (req, res) => res.type('application/xml').send(fixtureHandlingXml(baseUrl)));
   app.get('/app/:page.html', (req, res) => res.type('text/html').send(`<!doctype html><title>${req.params.page}</title><p>${req.params.page}</p>`));
   app.get('/app/ait.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)));
+  app.get('/app/ait-slow.xml', (req, res) => setTimeout(() => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)), 1000));
   app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
   // Content guide server written from clause 6 (see fixtureGuide below).
   app.get('/service-list-guide.xml', (req, res) => res.type('application/xml').send(fixtureGuideListXml(baseUrl)));
@@ -797,6 +800,32 @@ test('an instance whose controlling application is of a type the client cannot s
   await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
   assert.match(await page.textContent('#play-error-msg'), /application controlling media presentation is of type application\/vnd\.android\.package-archive/);
   assert.deepEqual(await plays(), [], 'no media is presented for it');
+});
+
+// Clause 5.2.4.2: "the client shall not issue an error to the user" when an XML AIT has no executable
+// application. The toolbar offers an application with media in parallel only once its XML AIT has
+// been read and has given one.
+test('a toolbar application is offered only after its XML AIT gives one, and never with an error', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await card('AIT Toolbar').click();
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.equal(await page.isHidden('#tb-app-btn'), true, 'not offered while the XML AIT is being read');
+  await page.waitForSelector('#tb-app-btn:not([hidden])', { timeout: 5000 });
+  assert.equal(await page.getAttribute('#tb-app-btn', 'data-url'), `${baseUrl}/app/ait-slow.xml`);
+  const [popup] = await Promise.all([page.context().waitForEvent('page'), page.click('#tb-app-btn')]);
+  await popup.waitForURL(/\/app\/fromait\.html\?sid=/, { timeout: 5000 });
+  await popup.close();
+
+  await page.evaluate(() => { window.__plays = []; });
+  await card('AIT Toolbar None').click();
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await plays())[0], /aittbnone\.mpd$/, 'the service plays');
+  await new Promise(r => setTimeout(r, 1000));
+  assert.equal(await page.isHidden('#tb-app-btn'), true, 'an XML AIT with only an HbbTV application is not offered');
+  await page.keyboard.press('a');
+  await new Promise(r => setTimeout(r, 500));
+  const notice = await page.$eval('.version-notice', el => el.textContent).catch(() => '');
+  assert.doesNotMatch(notice, /cannot be started/, 'no error is issued to the user');
 });
 
 test('outside scheduled hours the application for an inactive service is started', { skip: !playwright }, async () => {

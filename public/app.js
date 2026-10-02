@@ -1548,14 +1548,28 @@ function showOverlay(svc, delivery) {
 
 // The toolbar offers the application with media in parallel (LinkedApplicationCS 1.1) of the playing
 // instance, which is the fallback instance's own after a fallback (clause 5.2.3.2), else the
-// service's home page application (term 3).
-let toolbarApp = null;
+// service's home page application (term 3). The button is offered only once the application has
+// been resolved, an XML AIT read included; when the XML AIT has no application this client can
+// start, the application is not offered and no error is shown ("the client shall not issue an error
+// to the user", clause 5.2.4.2). The service itself keeps playing: its media does not depend on it.
+let toolbarAppUrl = null;
+let toolbarAppSeq = 0;
 function updateLinkedAppButton(svc, inst) {
-  toolbarApp = (inst?.apps || []).find(a => a.term === '1.1')
+  const app = (inst?.apps || []).find(a => a.term === '1.1')
     || (svc?.serviceApps || []).find(a => a.term === '3' && DVBIServiceList.effectiveApps([a], []).length)
     || null;
-  tbAppBtn.hidden = !toolbarApp;
-  tbAppBtn.dataset.url = toolbarApp?.url || '';
+  const seq = ++toolbarAppSeq;
+  toolbarAppUrl = null;
+  tbAppBtn.hidden = true;
+  tbAppBtn.dataset.url = '';
+  if (!app) return;
+  resolveLinkedApp(app).then(url => {
+    if (seq !== toolbarAppSeq) return;
+    if (!url) { console.info(`Linked application ${app.url} has no application this client can start; not offered`); return; }
+    toolbarAppUrl = url;
+    tbAppBtn.hidden = false;
+    tbAppBtn.dataset.url = app.url;
+  });
 }
 
 function updateDeliveryBadge(delivery, instIdx, total) {
@@ -2181,16 +2195,11 @@ async function resolveLinkedApp(app) {
   return chosen ? appLaunchUrl(chosen.url) : null;
 }
 
-// Opens an application in a new tab on the user's request. The tab is opened at once, while the
-// click still counts as a user action, and pointed at the application when it is resolved.
-function openLinkedApp(app) {
-  if (!app) return;
-  const w = window.open('', '_blank');
-  if (w) w.opener = null;
-  resolveLinkedApp(app).then(url => {
-    if (url && w) w.location.href = url;
-    else { if (w) w.close(); showVersionNotice('This application cannot be started'); }
-  });
+// Opens the toolbar application, already resolved by updateLinkedAppButton, in a new tab on the
+// user's request.
+function openLinkedApp() {
+  if (!toolbarAppUrl) return;
+  window.open(toolbarAppUrl, '_blank', 'noopener');
 }
 
 // ── Linked application in the player (clauses 5.2.3.2, 5.2.5.3, 5.2.13) ───────────────────
@@ -2218,7 +2227,7 @@ $('app-frame-close').addEventListener('click', () => {
   if (onExit) onExit();
 });
 
-tbAppBtn.addEventListener('click', () => openLinkedApp(toolbarApp));
+tbAppBtn.addEventListener('click', () => openLinkedApp());
 
 function autoSelectLang() {
   if (!langPref) return;
@@ -2615,7 +2624,7 @@ document.addEventListener('keydown', e => {
       break;
     case 'a': case 'A': {
       e.preventDefault();
-      openLinkedApp(toolbarApp);
+      openLinkedApp();
       break;
     }
     case 't': case 'T':
