@@ -1,5 +1,12 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — If-None-Match where a server provides an ETag (TS 102 796 clause 7.3.2.6)
+
+- **TS 103 770 V1.2.1 clause 4.3.2.1 has the client follow ETSI TS 102 796 clause 7.3.2.6**, which
+  asks for `If-None-Match` where a server provides an `ETag`: every DVB-I request now keeps the
+  `ETag` of the document and sends it as `If-None-Match` on the next request for it, and the proxy
+  passes both headers through.
+
 ## 2026-10 — Guide 404 handling for every ContentGuideSource endpoint (TS 103 770 V1.2.1 clause 4.3.3.4)
 
 - **A 404 from the ProgramInfo, GroupInfo or MoreEpisodes endpoint re-acquires the service list**,

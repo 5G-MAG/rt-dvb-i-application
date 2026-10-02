@@ -5,6 +5,9 @@
 //            local cache while the response is fresh, and no update is requested before it expires.
 //   4.3.2.2  If-Modified-Since carries the Last-Modified time held for that document, and is omitted
 //            when none is held; a 304 keeps the cached body.
+//   4.3.2.1  also has the client follow clause 7.3.2.6 of ETSI TS 102 796, which adds the
+//            If-None-Match header "where a server provides an ETag header": the ETag held for that
+//            document is sent as If-None-Match, and omitted when none is held.
 //   4.3.3.2  After 400 or 406 the same request is not sent again.
 //   4.3.3.3  After 401 or 403 the request is not sent again before the Retry-After period. How to
 //            re-authenticate is outside the scope of the clause, and this client has no credentials.
@@ -57,7 +60,7 @@ const DVBIHttp = (() => {
   //   resolve  maps the endpoint URL to the URL actually requested (for example through a proxy)
   //   now, random  injectable for tests
   function createClient({ fetch, resolve = u => u, now = () => Date.now(), random = Math.random }) {
-    const cache = new Map(); // url -> { body, contentType, lastModified, expiresAt }
+    const cache = new Map(); // url -> { body, contentType, lastModified, etag, expiresAt }
     const state = new Map(); // key -> { final, notBefore, retry, status }
 
     function failure(key, status, extra) {
@@ -93,6 +96,7 @@ const DVBIHttp = (() => {
 
       const headers = {};
       if (cached && cached.lastModified) headers['If-Modified-Since'] = cached.lastModified;
+      if (cached && cached.etag) headers['If-None-Match'] = cached.etag;
       const init = { headers, cache: 'no-store' };
       if (timeoutMs) init.signal = AbortSignal.timeout(timeoutMs);
 
@@ -114,6 +118,8 @@ const DVBIHttp = (() => {
         cached.expires = expires;
         const lm = res.headers.get('Last-Modified');
         if (lm) cached.lastModified = lm;
+        const etag = res.headers.get('ETag');
+        if (etag) cached.etag = etag;
         state.delete(key);
         return { ok: true, status: 304, body: cached.body, contentType: cached.contentType, notModified: true, maxAgeMs: maxAge, expires };
       }
@@ -121,7 +127,8 @@ const DVBIHttp = (() => {
       if (res.ok) {
         const body = await res.text();
         const contentType = res.headers.get('Content-Type') || '';
-        cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null, expiresAt, expires });
+        cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null,
+          etag: res.headers.get('ETag') || null, expiresAt, expires });
         state.delete(key);
         // maxAgeMs and expires are passed on for callers with their own expiry rule (clause 5.2.4.4.5).
         return { ok: true, status: res.status, body, contentType, maxAgeMs: maxAge, expires };

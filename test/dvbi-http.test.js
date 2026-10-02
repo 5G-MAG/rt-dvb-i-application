@@ -70,6 +70,28 @@ test('clause 4.3.2.2: If-Modified-Since is omitted without a Last-Modified time,
   assert.equal(second.body, '<a/>', 'a 304 keeps the cached body');
 });
 
+// Clause 4.3.2.1 has the client follow ETSI TS 102 796 clause 7.3.2.6: If-None-Match "where a server
+// provides an ETag header".
+test('TS 102 796 clause 7.3.2.6: If-None-Match is omitted without an ETag, then sent with it', async () => {
+  const f = fakeFetch([
+    { status: 200, body: '<a/>' },
+    { status: 200, headers: { ETag: '"v1"' }, body: '<a/>' },
+    { status: 304, headers: { ETag: '"v2"' } },
+    { status: 304 },
+  ]);
+  const c = DVBIHttp.createClient({ fetch: f });
+  await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[0].headers['If-None-Match'], undefined, 'none held: omitted');
+  await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[1].headers['If-None-Match'], undefined, 'the first response had no ETag');
+  const third = await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[2].headers['If-None-Match'], '"v1"');
+  assert.equal(third.notModified, true);
+  assert.equal(third.body, '<a/>');
+  await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[3].headers['If-None-Match'], '"v2"', 'an ETag on a 304 replaces the one held');
+});
+
 test('clause 4.3.2.1: no request while max-age has not passed, and the header is read on every response', async () => {
   const t = clock();
   const f = fakeFetch([

@@ -23,9 +23,10 @@ subnet): the warning quotes that exception and says whether every address of the
 IETF RFC 1918 clause 3 block on the subnet of one of this host's interfaces (`plainHttpWarning` in
 `server.js`). Loopback is not an RFC 1918 block. The browser shows the same warning under the list
 name. Redirects are followed by the proxy itself, up to 20 as fetch does, so that each hop is
-checked. `If-Modified-Since` is passed
-upstream and `Last-Modified`, `Cache-Control`, `Retry-After` and `Expires` are passed back (clause 4.3;
-`Expires` for Template XML AITs, clause 5.2.4.4.5).
+checked. `If-Modified-Since` and `If-None-Match` are passed
+upstream and `Last-Modified`, `ETag`, `Cache-Control`, `Retry-After` and `Expires` are passed back
+(clause 4.3; `ETag` and `If-None-Match` for ETSI TS 102 796 clause 7.3.2.6, which clause 4.3.2.1
+refers to; `Expires` for Template XML AITs, clause 5.2.4.4.5).
 
 ## Environment variables
 
