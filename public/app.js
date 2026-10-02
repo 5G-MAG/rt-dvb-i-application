@@ -314,6 +314,12 @@ videoEl.addEventListener('timeupdate', () => {
 // present a Content Finished image if one is signalled." (clause 5.2.7.3)
 videoEl.addEventListener('ended', () => {
   if (currentIdx < 0 || isCatchup) return;
+  // The next item of a DVB-I Playlist (clause 5.7.1), until all have played out.
+  if (playlist && playlist.svcIdx === currentIdx && playlist.session === currentSession && playlist.pos + 1 < playlist.entries.length) {
+    playlist.pos++;
+    playPlaylistEntry();
+    return;
+  }
   const img = services[currentIdx]?.instances?.[currentInstIdx]?.contentFinished;
   if (!img) return;
   contentFinishedEl.src = img.url;
@@ -702,7 +708,11 @@ function parseServiceList(doc) {
       if (dash) {
         const url = uriText(dash); // URI may be dvbisd-t:URI (types ns) or legacy <URI>
         const origSource = dash.getElementsByTagNameNS('*', 'OriginalDeliverySource')[0]?.textContent.trim() || null;
-        if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage, availability, ...instExtra });
+        // "If @contentType attribute carries application/xml, the URL refers to an XML file provided by
+        // a playlist server" (clause 5.2.7.2); application/dash+xml, or none, is an MPD.
+        const ubl = dash.getElementsByTagNameNS('*', 'UriBasedLocation')[0];
+        const isPlaylist = (ubl?.getAttribute('contentType') || '').toLowerCase() === 'application/xml';
+        if (url) instances.push({ priority, label, url, type: isPlaylist ? 'playlist' : 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage, availability, ...instExtra });
       }
 
       // 5G Broadcast: IdentifierBasedDeliveryParameters holding an mbms:// locator, which TS 103 770
@@ -1241,6 +1251,7 @@ function selectService(idx) {
   failedInstances = new Set();
   offAirShown = false;
   parentalBlocked = false;
+  playlist = null;
   clearTimeout(availabilityTimer);
   clearTimeout(programmeTimer);
   hideAppFrame();
@@ -1363,6 +1374,32 @@ function selectService(idx) {
   tryInstance(idx, session);
 }
 
+// The PlaylistEntry URLs of a DVB-I Playlist document (clause 5.7.1, table 39), each a DVB-DASH MPD.
+function parsePlaylist(body) {
+  const doc = new DOMParser().parseFromString(body || '', 'application/xml');
+  if (doc.querySelector('parsererror') || doc.documentElement?.localName !== 'Playlist') return [];
+  return [...doc.documentElement.children].filter(c => c.localName === 'PlaylistEntry')
+    .map(e => e.textContent.trim()).filter(Boolean);
+}
+
+let playlist = null; // { svcIdx, instIdx, session, entries, pos } while a playlist instance plays
+
+function playPlaylistEntry() {
+  const p = playlist;
+  const svc = services[p.svcIdx];
+  const delivery = svc.instances[p.instIdx];
+  overlayDlv.textContent = `DASH · ${p.pos + 1}/${p.entries.length}`;
+  DVBIPlayer.play(videoEl, p.entries[p.pos], 'application/dash+xml', delivery.protection,
+    () => {
+      if (playlist !== p || p.session !== currentSession) return;
+      bufSpinner.hidden = true;
+      failedInstances.add(p.instIdx);
+      tryInstance(p.svcIdx, p.session);
+    },
+    (isBuffering) => { if (playlist === p && p.session === currentSession) bufSpinner.hidden = !isBuffering; },
+    () => { autoSelectLang(); if (tracksPanelOpen) refreshTracksPanel(); });
+}
+
 // Plays the instance that comes first by precedence (clause 5.2.13) among those not yet failed in
 // this selection; on a non-recoverable error that instance is set aside and precedence is applied
 // again.
@@ -1410,6 +1447,29 @@ function tryInstance(svcIdx, session) {
       const discard = () => { failedInstances.add(instIdx); currentSession++; tryInstance(svcIdx, currentSession); };
       if (!url) { console.warn('Linked application cannot be started, discarding its instance'); discard(); return; }
       showAppFrame(url, () => { if (svcIdx === currentIdx && session === currentSession) discard(); });
+    });
+    return;
+  }
+
+  playlist = null;
+  // A DVB-I Playlist (clauses 5.2.7, 5.7): fetched now that the instance is selected ("The DVB-DASH
+  // manifest or playlist should only be retrieved and processed when the service instance is
+  // selected."), its entries then played in order. One that cannot be had fails the instance.
+  if (delivery.type === 'playlist') {
+    updateDeliveryBadge(delivery, instIdx, svc.instances.length);
+    bufSpinner.hidden = false;
+    playError.hidden  = true;
+    dvbiHttp.get(delivery.url).then(r => {
+      if (svcIdx !== currentIdx || session !== currentSession) return;
+      const entries = r.ok ? parsePlaylist(r.body) : [];
+      if (!entries.length) {
+        console.warn(`Playlist ${delivery.url} cannot be used (${r.ok ? 'no PlaylistEntry' : failureText(r)})`);
+        failedInstances.add(instIdx);
+        tryInstance(svcIdx, session);
+        return;
+      }
+      playlist = { svcIdx, instIdx, session, entries, pos: 0 };
+      playPlaylistEntry();
     });
     return;
   }
@@ -1474,7 +1534,7 @@ function updateLinkedAppButton(svc, inst) {
 }
 
 function updateDeliveryBadge(delivery, instIdx, total) {
-  const label = delivery.type === 'application/dash+xml' ? 'DASH' : 'HLS';
+  const label = delivery.type === 'application/dash+xml' || delivery.type === 'playlist' ? 'DASH' : 'HLS';
   overlayDlv.textContent = total > 1 ? `${label} ·${instIdx + 1}/${total}` : label;
 }
 

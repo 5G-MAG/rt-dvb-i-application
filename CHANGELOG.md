@@ -1,5 +1,12 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — DVB-I Playlists (TS 103 770 V1.2.1 clauses 5.2.7 and 5.7)
+
+- **A `DASHDeliveryParameters` location with `@contentType="application/xml"` is a Playlist**: it
+  is fetched when the instance is selected, its `PlaylistEntry` MPDs play one after the other, and
+  the content finished image follows the last one. A playlist that cannot be fetched or holds no
+  entry fails its instance, so the next instance plays.
+
 ## 2026-10 — Content guide per TS 103 770 V1.2.1 clause 6
 
 - **Source by the precedence of clause 6.1** (`public/guide.js`): the service's own

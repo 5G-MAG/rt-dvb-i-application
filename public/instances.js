@@ -97,7 +97,7 @@ const DVBIInstances = (() => {
       return 'only in subscription packages this client is not associated with';
     }
     if (inst.type === 'multicast') return 'multicast delivery cannot be received in a browser';
-    if (inst.type === 'application/dash+xml' && !caps.dash) return 'no DASH player is available';
+    if ((inst.type === 'application/dash+xml' || inst.type === 'playlist') && !caps.dash) return 'no DASH player is available';
     if (inst.type === 'application/vnd.apple.mpegurl' && !caps.hls) return 'no HLS player is available';
     const p = inst.protection;
     if (p) {

@@ -15,7 +15,7 @@ const https = require('https');
 const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl;
-const hits = { cg404List: 0, cg404Guide: 0 };
+const hits = { cg404List: 0, cg404Guide: 0, playlist: 0 };
 const cgRequests = [];
 let playwright;
 try { playwright = require('playwright'); }
@@ -352,6 +352,31 @@ function fixtureGuide(req, res, base) {
   res.status(404).end();
 }
 
+// DVB-I Playlists (clauses 5.2.7 and 5.7): a service whose instance is a playlist (application/xml)
+// with a content finished image, and one whose playlist server answers 404 before a plain MPD.
+function fixturePlaylistListXml(base) {
+  const loc = (type, url) => `<DASHDeliveryParameters><UriBasedLocation contentType="${type}"><dvbisd-t:URI>${url}</dvbisd-t:URI></UriBasedLocation></DASHDeliveryParameters>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024" xmlns:tva="urn:tva:metadata:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023" id="tag:p,2026:list" version="1" xml:lang="en">
+  <Name>Playlist List</Name><ProviderName>P</ProviderName>
+  <Service version="1">
+    <UniqueIdentifier>tag:p,2026:pl</UniqueIdentifier>
+    <ServiceInstance>
+      <RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2"/><tva:MediaLocator><tva:MediaUri contentType="image/png">${base}/img/finished.png</tva:MediaUri></tva:MediaLocator></RelatedMaterial>
+      ${loc('application/xml', `${base}/playlists/mine.xml`)}
+    </ServiceInstance>
+    <ServiceName>Playlist Service</ServiceName><ProviderName>P</ProviderName>
+  </Service>
+  <Service version="1">
+    <UniqueIdentifier>tag:p,2026:gone</UniqueIdentifier>
+    <ServiceInstance priority="0">${loc('application/xml', `${base}/playlists/gone.xml`)}</ServiceInstance>
+    <ServiceInstance priority="1">${loc('application/dash+xml', `${base}/dash/plain.mpd`)}</ServiceInstance>
+    <ServiceName>Gone Playlist</ServiceName><ProviderName>P</ProviderName>
+  </Service>
+</ServiceList>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -383,6 +408,16 @@ before(async () => {
   // Content guide server written from clause 6 (see fixtureGuide below).
   app.get('/service-list-guide.xml', (req, res) => res.type('application/xml').send(fixtureGuideListXml(baseUrl)));
   app.get(/^\/cg\/(.*)$/, (req, res) => fixtureGuide(req, res, baseUrl));
+  app.get('/service-list-playlist.xml', (req, res) => res.type('application/xml').send(fixturePlaylistListXml(baseUrl)));
+  app.get('/playlists/:name.xml', (req, res) => {
+    hits.playlist++;
+    if (req.params.name === 'gone') return res.status(404).end();
+    res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Playlist xmlns="urn:dvb:metadata:servicediscovery:2024">
+  <PlaylistEntry>${baseUrl}/dash/clip1.mpd</PlaylistEntry>
+  <PlaylistEntry>${baseUrl}/dash/clip2.mpd</PlaylistEntry>
+</Playlist>`);
+  });
   app.get('/registry', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl)));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
@@ -899,4 +934,29 @@ test('box sets: categories, lists filtered by Template XML AIT, contents', { ski
   await page.click('#browse-back');
   await page.waitForSelector('#browse-list .browse-item:has-text("Playable Box")', { timeout: 5000 });
   await page.click('#browse-close');
+});
+
+// DVB-I Playlists, TS 103 770 V1.2.1 clauses 5.2.7 and 5.7.1.
+test('a playlist is fetched on selection and its entries play in order, then the content finished image', { skip: !playwright }, async () => {
+  hits.playlist = 0;
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-playlist.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Playlist Service")', { timeout: 10000 });
+  await page.evaluate(() => { window.dashjs = window.dashjs || {}; window.__plays = []; DVBIPlayer.play = (v, url) => { window.__plays.push(url); }; });
+  assert.equal(hits.playlist, 0, 'not fetched before the instance is selected');
+  await page.click('.ch-card:has(.ch-name:text-is("Playlist Service"))');
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await page.evaluate(() => window.__plays))[0], /clip1\.mpd$/, 'the first PlaylistEntry, not the playlist document');
+  await page.evaluate(() => document.getElementById('video').dispatchEvent(new Event('ended')));
+  await page.waitForFunction(() => window.__plays.length === 2, null, { timeout: 5000 });
+  assert.match((await page.evaluate(() => window.__plays))[1], /clip2\.mpd$/);
+  assert.equal(await page.isHidden('#content-finished'), true, 'not finished after the first item');
+  await page.evaluate(() => document.getElementById('video').dispatchEvent(new Event('ended')));
+  await page.waitForSelector('#content-finished:not([hidden])', { timeout: 5000 });
+});
+
+test('a playlist server 404 fails the instance and the next one plays', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await page.click('.ch-card:has(.ch-name:text-is("Gone Playlist"))');
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await page.evaluate(() => window.__plays))[0], /plain\.mpd$/);
 });
