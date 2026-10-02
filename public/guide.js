@@ -19,11 +19,22 @@ const DVBIGuide = (() => {
     return contentGuideServiceRef || uniqueIdentifier;
   }
 
-  // Query string of [name, value] pairs. Clause 6.2.2: reserved characters in values are
-  // percent-encoded, and "The square brackets "[" and "]" shall be percent-encoded".
+  // One key or value of a query string. Clauses 5.1.3.2 and 6.2.2: any "reserved" characters of
+  // IETF RFC 3986 clause 2.2 within key/value pairs "shall be percent-encoded as defined in clause
+  // 2.1 of IETF RFC 3986". RFC 3986 clause 2.2: reserved = gen-delims / sub-delims, gen-delims
+  // ":" / "/" / "?" / "#" / "[" / "]" / "@", sub-delims "!" / "$" / "&" / "'" / "(" / ")" / "*" /
+  // "+" / "," / ";" / "=". encodeURIComponent encodes all of them except ! ' ( ) *, which are
+  // encoded here as well, with the uppercase hexadecimal digits clause 2.1 recommends.
+  function encodeQueryComponent(v) {
+    return encodeURIComponent(String(v))
+      .replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  }
+
+  // Query string of [name, value] pairs, each encoded as above, so "The square brackets "[" and
+  // "]" shall be percent-encoded" (clause 6.2.2) holds for the array keys too.
   function query(pairs) {
     return pairs.filter(([, v]) => v != null && v !== '')
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+      .map(([k, v]) => `${encodeQueryComponent(k)}=${encodeQueryComponent(v)}`).join('&');
   }
 
   function withQuery(base, pairs) {
@@ -119,7 +130,7 @@ const DVBIGuide = (() => {
   return {
     resolveSource, serviceId, scheduleWindows, scheduleUrl, nowNextUrl, programUrl, moreEpisodesUrl,
     boxSetCategoriesUrl, boxSetListsUrl, boxSetContentsUrl, aitUrl, onDemandAvailable,
-    templateAitExpiry, orderResults,
+    templateAitExpiry, orderResults, encodeQueryComponent,
   };
 })();
 

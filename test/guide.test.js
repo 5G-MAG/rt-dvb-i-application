@@ -74,3 +74,16 @@ test('clauses 6.7.3 and 6.9: results by MemberOf@index, duplicates dropped', () 
   const items = [{ programId: 'b', index: 6 }, { programId: 'a', index: 5 }, { programId: 'b', index: 7 }];
   assert.deepEqual(G.orderResults(items).map(i => `${i.programId}${i.index}`), ['a5', 'b6']);
 });
+
+// Clauses 5.1.3.2 and 6.2.2: every reserved character of IETF RFC 3986 clause 2.2 in a key or value
+// is percent-encoded; encodeURIComponent alone leaves the sub-delims ! ' ( ) * as they are.
+test('clauses 5.1.3.2 and 6.2.2: all RFC 3986 reserved characters in keys and values are percent-encoded', () => {
+  const reserved = ':/?#[]@' + "!$&'()*+,;=";
+  const encoded = G.encodeQueryComponent(reserved);
+  assert.equal(encoded, '%3A%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D');
+  assert.equal(G.encodeQueryComponent('Az09-._~'), 'Az09-._~', 'unreserved characters are left as they are');
+  assert.equal(G.programUrl('https://cg.example/program', "crid://x.example/it's(1)*!"),
+    'https://cg.example/program?pid=crid%3A%2F%2Fx.example%2Fit%27s%281%29%2A%21');
+  assert.equal(G.moreEpisodesUrl('https://cg.example/more', 'p', ['r(1)']),
+    'https://cg.example/more?pid=p&type=ondemand&regionID%5B%5D=r%281%29');
+});

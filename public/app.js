@@ -2429,7 +2429,8 @@ $('slr-load-btn').addEventListener('click', async () => {
   const endpoint = ($('slr-endpoint').value || '').trim() || DEFAULT_REGISTRY;
   localStorage.setItem('dvbi-slr-endpoint', endpoint);
   const sep = endpoint.includes('?') ? '&' : '?';
-  const registryUrl = `${endpoint}${sep}TargetCountry=${encodeURIComponent(cc)}`;
+  // Clause 5.1.3.2: reserved characters in the value percent-encoded (DVBIGuide.encodeQueryComponent).
+  const registryUrl = `${endpoint}${sep}TargetCountry=${DVBIGuide.encodeQueryComponent(cc)}`;
   const resultsEl = $('slr-results');
   resultsEl.hidden = true;
   resultsEl.innerHTML = '';

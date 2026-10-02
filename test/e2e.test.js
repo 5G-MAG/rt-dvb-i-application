@@ -20,7 +20,7 @@ const http = require('http');
 const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl, plainServer;
-const hits = { cg404List: 0, cg404Guide: 0, playlist: 0 };
+const hits = { cg404List: 0, cg404Guide: 0, playlist: 0, registryQuery: '' };
 const cgRequests = [];
 let playwright;
 try { playwright = require('playwright'); }
@@ -430,7 +430,7 @@ before(async () => {
   <PlaylistEntry>${baseUrl}/dash/clip2.mpd</PlaylistEntry>
 </Playlist>`);
   });
-  app.get('/registry', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl)));
+  app.get('/registry', (req, res) => { hits.registryQuery = req.originalUrl; res.type('application/xml').send(fixtureRegistryXml(baseUrl)); });
   app.get('/registry-reg-dvbs', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl, { regulatorDvbs: true })));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
@@ -845,6 +845,20 @@ test('the registry picker offers the regulator\'s list as the default and holds 
 
   await page.click('#slr-results .preset-btn.active');
   await page.waitForSelector('#list-name:text("Handling List")', { timeout: 5000 });
+});
+
+// Clause 5.1.3.2: reserved characters of RFC 3986 clause 2.2 in a query value are percent-encoded,
+// the sub-delims ( ) * included, which encodeURIComponent and the browser both leave as they are.
+test('the registry query percent-encodes every reserved character of the country value', { skip: !playwright }, async () => {
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); });
+  hits.registryQuery = '';
+  await page.fill('#slr-endpoint', `${baseUrl}/registry`);
+  await page.fill('#slr-input', 'G(B)*!');
+  await page.click('#slr-load-btn');
+  await page.waitForSelector('#slr-results:not([hidden]) .preset-btn', { timeout: 5000 });
+  assert.equal(hits.registryQuery, '/registry?TargetCountry=G%28B%29%2A%21');
 });
 
 // Table 83 NOTE 2: the default is a regulator list whenever the response has one, even one this

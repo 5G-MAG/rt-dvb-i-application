@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Query values percent-encoded per IETF RFC 3986 (TS 103 770 V1.2.1 clauses 5.1.3.2, 6.2.2)
+
+- **Every reserved character of RFC 3986 clause 2.2 in a query key or value is percent-encoded**,
+  including `! ' ( ) *`, which `encodeURIComponent` leaves as they are: the registry query, every
+  content guide request and the XML AIT contextual parameters.
+
 ## 2026-10 — A regulator list is always the default (TS 103 770 V1.2.1 table 83 NOTE 2)
 
 - **When a registry response includes a list with `@regulatorListFlag`, a regulator list is the
