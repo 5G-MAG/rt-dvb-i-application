@@ -868,6 +868,7 @@ kbd {
 
 /* Linked app button */
 .tb-app-btn { color: var(--accent); }
+.tb-app-btn:disabled { color: var(--text-3); opacity: 0.6; cursor: not-allowed; }
 
 /* Custom list add/remove button on channel cards (§4.7) */
 .ch-custom-btn {

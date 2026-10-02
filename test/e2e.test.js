@@ -809,9 +809,9 @@ test('an instance whose controlling application is of a type the client cannot s
 });
 
 // Clause 5.2.4.2: "the client shall not issue an error to the user" when an XML AIT has no executable
-// application. The toolbar offers an application with media in parallel only once its XML AIT has
-// been read and has given one.
-test('a toolbar application is offered only after its XML AIT gives one, and never with an error', { skip: !playwright }, async () => {
+// application. The toolbar offers an application with media in parallel once its XML AIT has been
+// read, and shows it as unavailable when the XML AIT gives none (clause 5.2.4.2).
+test('a toolbar application is offered once its XML AIT is read, shown unavailable when it gives none, never with an error', { skip: !playwright }, async () => {
   await page.evaluate(() => { window.__plays = []; });
   await card('AIT Toolbar').click();
   await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
@@ -827,7 +827,9 @@ test('a toolbar application is offered only after its XML AIT gives one, and nev
   await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
   assert.match((await plays())[0], /aittbnone\.mpd$/, 'the service plays');
   await new Promise(r => setTimeout(r, 1000));
-  assert.equal(await page.isHidden('#tb-app-btn'), true, 'an XML AIT with only an HbbTV application is not offered');
+  assert.equal(await page.isHidden('#tb-app-btn'), false, 'an XML AIT with only an HbbTV application is shown');
+  assert.equal(await page.isDisabled('#tb-app-btn'), true, '... as unavailable (clause 5.2.4.2)');
+  assert.match(await page.textContent('#tb-app-btn'), /unavailable/);
   await page.keyboard.press('a');
   await new Promise(r => setTimeout(r, 500));
   const notice = await page.$eval('.version-notice', el => el.textContent).catch(() => '');

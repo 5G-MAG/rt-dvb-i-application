@@ -1549,9 +1549,10 @@ function showOverlay(svc, delivery) {
 // The toolbar offers the application with media in parallel (LinkedApplicationCS 1.1) of the playing
 // instance, which is the fallback instance's own after a fallback (clause 5.2.3.2), else the
 // service's home page application (term 3). The button is offered only once the application has
-// been resolved, an XML AIT read included; when the XML AIT has no application this client can
-// start, the application is not offered and no error is shown ("the client shall not issue an error
-// to the user", clause 5.2.4.2). The service itself keeps playing: its media does not depend on it.
+// been resolved, an XML AIT read included. When the XML AIT has no application this client can
+// start, no error is issued and the application is shown as unavailable: "the client shall not
+// issue an error to the user but instead shall show a service or content item as unavailable"
+// (clause 5.2.4.2). The service itself keeps playing: its media does not depend on it.
 let toolbarAppUrl = null;
 let toolbarAppSeq = 0;
 function updateLinkedAppButton(svc, inst) {
@@ -1561,14 +1562,22 @@ function updateLinkedAppButton(svc, inst) {
   const seq = ++toolbarAppSeq;
   toolbarAppUrl = null;
   tbAppBtn.hidden = true;
+  tbAppBtn.disabled = false;
+  tbAppBtn.textContent = 'App';
+  tbAppBtn.title = 'Launch linked application (A)';
   tbAppBtn.dataset.url = '';
   if (!app) return;
   resolveLinkedApp(app).then(url => {
     if (seq !== toolbarAppSeq) return;
-    if (!url) { console.info(`Linked application ${app.url} has no application this client can start; not offered`); return; }
-    toolbarAppUrl = url;
     tbAppBtn.hidden = false;
     tbAppBtn.dataset.url = app.url;
+    if (!url) {
+      tbAppBtn.disabled = true;
+      tbAppBtn.textContent = 'App unavailable';
+      tbAppBtn.title = 'Linked application unavailable: no application this client can run';
+      return;
+    }
+    toolbarAppUrl = url;
   });
 }
 
