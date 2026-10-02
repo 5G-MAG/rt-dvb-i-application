@@ -144,14 +144,18 @@ const DVBIServiceList = (() => {
   // overrides a service-level 2 with the same type; 3 is used only at service level.
   // Each app is { term, url, contentType }. Applications of a type this client cannot start are
   // ignored ("The DVB-I client may ignore any signalled application that has a MediaUri@contentType
-  // attribute that they do not understand.", clause 5.2.3.1).
+  // attribute that they do not understand.", clause 5.2.3.1), except an application controlling
+  // media presentation (1.2): it is kept, marked { unstartable: true }, because its instance is then
+  // to be discarded (clause 5.2.13, NOTE 1 i)) rather than played from its delivery parameters,
+  // which clause 5.2.3.2 has the client ignore.
   function effectiveApps(serviceApps, instanceApps) {
     const ok = a => STARTABLE_TYPES.includes(String(a.contentType || '').toLowerCase());
+    const kept = a => ok(a) || a.term === '1.2';
     const live = t => t === '1.1' || t === '1.2';
-    const inst = (instanceApps || []).filter(a => ok(a) && a.term !== '3');
-    const svc = (serviceApps || []).filter(ok).filter(s => !inst.some(i =>
+    const inst = (instanceApps || []).filter(a => kept(a) && a.term !== '3');
+    const svc = (serviceApps || []).filter(kept).filter(s => !inst.some(i =>
       i.contentType === s.contentType && ((live(i.term) && live(s.term)) || (i.term === '2' && s.term === '2'))));
-    return [...inst, ...svc];
+    return [...inst, ...svc].map(a => (ok(a) ? a : { ...a, unstartable: true }));
   }
 
   // ── XML AIT ───────────────────────────────────────────────────────────────────────────────

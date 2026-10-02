@@ -96,6 +96,11 @@ const DVBIInstances = (() => {
     if (inst.packages && inst.packages.length && !inst.packages.some(p => (caps.packages || []).includes(p))) {
       return 'only in subscription packages this client is not associated with';
     }
+    // "Service instances with a linked "application controlling media presentation" that cannot be
+    // started shall be discarded." (clause 5.2.13); NOTE 1 i): no engine for the application's format.
+    if (inst.type === 'application' && inst.app && inst.app.unstartable) {
+      return `its application controlling media presentation is of type ${inst.app.contentType || '(none)'}, which this client cannot start`;
+    }
     if (inst.type === 'multicast') return 'multicast delivery cannot be received in a browser';
     if ((inst.type === 'application/dash+xml' || inst.type === 'playlist') && !caps.dash) return 'no DASH player is available';
     if (inst.type === 'application/vnd.apple.mpegurl' && !caps.hls) return 'no HLS player is available';

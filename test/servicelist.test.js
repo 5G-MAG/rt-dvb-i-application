@@ -132,6 +132,17 @@ test('clause 5.2.3.4: instance-level applications override service-level ones of
     'the instance 1.2 replaces the service 1.1 of the same type; other types stay; 3 only at service level; unknown types ignored');
 });
 
+// Clause 5.2.13 bullet and NOTE 1 i): a 1.2 application of a type this client cannot start is kept,
+// marked, so that its instance is discarded instead of played from its delivery parameters.
+test('clause 5.2.13: a controlling application of a type the client cannot start is kept and marked', () => {
+  const apk = 'application/vnd.android.package-archive';
+  const apps = L.effectiveApps([{ term: '1.1', url: 'svc-apk', contentType: apk }],
+    [{ term: '1.2', url: 'inst-apk', contentType: apk }, { term: '1.1', url: 'inst-apk-11', contentType: apk }]);
+  assert.deepEqual(apps, [{ term: '1.2', url: 'inst-apk', contentType: apk, unstartable: true }],
+    'the 1.2 stays, marked; the 1.1 of that type is still ignored, and the service 1.1 of the same type is overridden');
+  assert.equal(L.effectiveApps([], [{ term: '1.2', url: 'h', contentType: 'text/html' }])[0].unstartable, undefined);
+});
+
 test('clause 5.2.4.2: the XML AIT application with the highest priority of a startable type', () => {
   const apps = [
     { type: 'application/vnd.hbbtv.xhtml+xml', priority: 9, url: 'hbbtv' },

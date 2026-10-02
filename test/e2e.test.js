@@ -208,6 +208,10 @@ function fixtureHandlingXml(base) {
     app('2', `${base}/app/offair.html`))}${
   service('gold', 'Gold Only', `<ServiceInstance><SubscriptionPackage>Gold</SubscriptionPackage>${dash('gold')}</ServiceInstance>`)}${
   service('rated', 'Rated', `<ServiceInstance>${dash('rated')}</ServiceInstance>`, '<ParentalRating><MinimumAge>18</MinimumAge></ParentalRating>')}${
+  service('apptype', 'App Type', `
+    <ServiceInstance priority="0">${app('1.2', `${base}/app/controlling.apk`, 'application/vnd.android.package-archive')}${dash('apptypeignored')}</ServiceInstance>
+    <ServiceInstance priority="1">${dash('apptypefallback')}</ServiceInstance>`)}${
+  service('apptypeonly', 'App Type Only', `<ServiceInstance>${app('1.2', `${base}/app/controlling.apk`, 'application/vnd.android.package-archive')}${dash('apptypeonlyignored')}</ServiceInstance>`)}${
   service('vod', 'VoD', `<ServiceInstance>${dash('vod')}<RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2"/><tva:MediaLocator><tva:MediaUri contentType="image/png">${base}/img/finished.png</tva:MediaUri></tva:MediaLocator></RelatedMaterial></ServiceInstance>`)}
 </ServiceList>`.replace(/<ServiceInstance([^>]*)>([\s\S]*?)<\/ServiceInstance>/g, (m, attrs, inner) => {
     // Schema order inside ServiceInstance: RelatedMaterial before delivery parameters.
@@ -777,6 +781,22 @@ test('an instance whose controlling application cannot be started is discarded',
   await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
   assert.match((await plays())[0], /aitnone\.mpd$/, 'the XML AIT offers only HbbTV, which this client cannot start');
   assert.equal(await page.isHidden('#app-frame-wrap'), true);
+});
+
+// Clause 5.2.13 bullet and NOTE 1 i), clause 5.2.3.2: a controlling application of a type this client
+// has no engine for discards its instance; its delivery parameters are never played.
+test('an instance whose controlling application is of a type the client cannot start is discarded', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await card('App Type').click();
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await plays())[0], /apptypefallback\.mpd$/, 'the next instance plays, not the ignored delivery parameters');
+  assert.equal(await page.isHidden('#app-frame-wrap'), true);
+
+  await page.evaluate(() => { window.__plays = []; });
+  await card('App Type Only').click();
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  assert.match(await page.textContent('#play-error-msg'), /application controlling media presentation is of type application\/vnd\.android\.package-archive/);
+  assert.deepEqual(await plays(), [], 'no media is presented for it');
 });
 
 test('outside scheduled hours the application for an inactive service is started', { skip: !playwright }, async () => {

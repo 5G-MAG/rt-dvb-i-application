@@ -81,6 +81,8 @@ test('clause 5.2.13: instances known in advance not to play are discarded', () =
     [inst({ protection: { allSystems: {}, caSystems: ['0x0B00'] } }), /conditional access only/],
     [inst({ protection: { allSystems: { 'urn:uuid:w': '' }, caSystems: [] } }), /Encrypted Media Extensions/, { ...caps, eme: false }],
     [inst({ protection: { allSystems: { 'urn:uuid:unknown': '' }, caSystems: [] } }), /DRM systems this client does not know/],
+    [inst({ type: 'application', protection: null, app: { term: '1.2', contentType: 'application/x-other', unstartable: true } }),
+      /application controlling media presentation is of type application\/x-other, which this client cannot start/],
   ];
   for (const [i, why, c] of cases) {
     assert.match(I.cannotPlay(i, c || caps), why);

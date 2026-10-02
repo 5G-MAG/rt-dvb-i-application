@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Controlling applications this client cannot start (TS 103 770 V1.2.1 clauses 5.2.13, 5.2.3.2)
+
+- **An instance whose application controlling media presentation is of a type this client cannot
+  start is discarded**, and the next instance is tried; its delivery parameters are never played.
+  When no other instance can play, the error names the application type.
+
 ## 2026-10 — Query values percent-encoded per IETF RFC 3986 (TS 103 770 V1.2.1 clauses 5.1.3.2, 6.2.2)
 
 - **Every reserved character of RFC 3986 clause 2.2 in a query key or value is percent-encoded**,

@@ -663,8 +663,11 @@ function parseServiceList(doc) {
 
       // An application controlling media presentation: "no media stream shall be presented by the
       // DVB-I client when the service is selected" and "If delivery parameters elements are included
-      // then they shall be ignored by the DVB-I client." (clause 5.2.3.2)
-      const controllingApp = apps.find(a => a.term === '1.2');
+      // then they shall be ignored by the DVB-I client." (clause 5.2.3.2). One of a type this client
+      // can start is preferred; if every one is of a type it cannot start, the instance still is an
+      // application instance, and DVBIInstances.cannotPlay discards it (clause 5.2.13).
+      const controllingApps = apps.filter(a => a.term === '1.2');
+      const controllingApp = controllingApps.find(a => !a.unstartable) || controllingApps[0];
       if (controllingApp) {
         instances.push({ priority, label, availability, type: 'application', url: controllingApp.url, app: controllingApp, protection: null, ...instExtra });
         continue;
