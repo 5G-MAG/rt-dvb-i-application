@@ -1,5 +1,18 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Registry responses acted on per TS 103 770 V1.2.1 clause 8.5.3.2
+
+- **A regulator's list is the default** (`public/discovery.js`): offerings with
+  `@regulatorListFlag` come first in the picker, the first installable one marked default and
+  focused; a provider or registry with `@regulatorFlag` is labelled.
+- **`Delivery` is read**: an offering whose required delivery (DVB-T, DVB-C, DVB-S, RTSP, multicast,
+  an application type or extension this client cannot use) is unusable is listed, disabled, with
+  the reason, and never auto-loaded.
+- **`Language`, `TargetCountry` and the service list logo** are shown; lists in the preferred audio
+  language come first, and a list for another country than the one looked up is held back.
+- **`ServiceList@id` is checked against `ServiceListId`**; a mismatch fails that URI like any other
+  error.
+
 ## 2026-10 — Service list handling per TS 103 770 V1.2.1 clause 5
 
 - **Channel numbers from one LCN table** (`public/servicelist.js`), chosen by the exact `@regionID`

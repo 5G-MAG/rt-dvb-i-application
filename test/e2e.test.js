@@ -223,6 +223,33 @@ ${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' : a('te
 </mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
 }
 
+// A registry response (clause 5.3) with a plain list, a regulator's list, a list that requires DVB-T,
+// and a list whose ServiceListId differs from the list's @id.
+function fixtureRegistryXml(base) {
+  const offering = (name, uri, id, { flag = false, delivery = '<dvbisd-t:DASHDelivery/>', extra = '' } = {}) => `
+    <ServiceListOffering${flag ? ' regulatorListFlag="true"' : ''}>
+      <dvbisd-t:ServiceListName>${name}</dvbisd-t:ServiceListName>
+      <dvbisd-t:ServiceListURI contentType="application/vnd.dvb.dvbisl+xml"><dvbisd-t:URI>${uri}</dvbisd-t:URI></dvbisd-t:ServiceListURI>
+      <dvbisd-t:Delivery>${delivery}</dvbisd-t:Delivery>${extra}
+      <dvbisd-t:ServiceListId>${id}</dvbisd-t:ServiceListId>
+    </ServiceListOffering>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceListEntryPoints xml:lang="en" xmlns="urn:dvb:metadata:servicelistdiscovery:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023">
+  <ServiceListRegistryEntity regulatorFlag="true"><Name>Test Registry</Name></ServiceListRegistryEntity>
+  <ProviderOffering>
+    <Provider><Name>Plain Provider</Name></Provider>${
+    offering('Plain List', `${base}/service-list.xml`, 'tag:dvbi.example,2024:servicelist:default')}${
+    offering('Wrong Id List', `${base}/service-list-5g.xml`, 'tag:wrong,2026:id')}${
+    offering('Terrestrial List', `${base}/service-list.xml`, 'tag:t,2026:t', { delivery: '<dvbisd-t:DVBTDelivery required="true"/>' })}
+  </ProviderOffering>
+  <ProviderOffering>
+    <Provider regulatorFlag="true"><Name>Regulator</Name></Provider>${
+    offering('Regulator List', `${base}/service-list-handling.xml`, 'tag:h,2026:list', { flag: true, extra: '<dvbisd-t:Language>en</dvbisd-t:Language><dvbisd-t:TargetCountry>GBR</dvbisd-t:TargetCountry>' })}
+  </ProviderOffering>
+</ServiceListEntryPoints>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -251,6 +278,7 @@ before(async () => {
   app.get('/app/:page.html', (req, res) => res.type('text/html').send(`<!doctype html><title>${req.params.page}</title><p>${req.params.page}</p>`));
   app.get('/app/ait.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)));
   app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
+  app.get('/registry', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl)));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
@@ -624,4 +652,47 @@ test('a content finished image is shown when the VoD has played out', { skip: !p
   await page.evaluate(() => document.getElementById('video').dispatchEvent(new Event('ended')));
   await page.waitForSelector('#content-finished:not([hidden])', { timeout: 5000 });
   assert.equal(await page.getAttribute('#content-finished', 'src'), `${baseUrl}/img/finished.png`);
+});
+
+// Service list discovery, TS 103 770 V1.2.1 clause 8.5.3.2 and clause 5.3.
+async function registryLookup() {
+  await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => localStorage.clear());
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); });
+  await page.fill('#slr-endpoint', `${baseUrl}/registry`);
+  await page.fill('#slr-input', 'GBR');
+  await page.click('#slr-load-btn');
+  await page.waitForSelector('#slr-results:not([hidden]) .preset-btn', { timeout: 5000 });
+  assert.match(await page.textContent('#slr-results .settings-label'), /from Test Registry \(a recognized regulator\)/);
+  return page.$$eval('#slr-results .preset-btn', bs => bs.map(b => ({
+    text: b.textContent.trim(), disabled: b.disabled, active: b.classList.contains('active'), focused: b === document.activeElement, title: b.title,
+  })));
+}
+
+test('the registry picker offers the regulator\'s list as the default and holds back a DVB-T one', { skip: !playwright }, async () => {
+  const buttons = await registryLookup();
+  assert.match(buttons[0].text, /^Regulator List \(default · regulator list · provider is a regulator · en · GBR\)$/);
+  assert.equal(buttons[0].active && buttons[0].focused, true, 'the default is marked and focused');
+  const terrestrial = buttons.find(b => b.text.startsWith('Terrestrial List'));
+  assert.equal(terrestrial.disabled, true, 'a list that requires DVB-T is not installed by this client');
+  assert.match(terrestrial.title, /requires DVB-T/);
+  assert.equal(buttons[buttons.length - 1], terrestrial, 'and comes last');
+
+  await page.click('#slr-results .preset-btn.active');
+  await page.waitForSelector('#list-name:text("Handling List")', { timeout: 5000 });
+});
+
+test('a list whose @id differs from the registry\'s ServiceListId is treated as an error', { skip: !playwright }, async () => {
+  await registryLookup();
+  const logged = [];
+  const onConsole = msg => logged.push(msg.text());
+  page.on('console', onConsole);
+  await page.click('#slr-results .preset-btn:has-text("Wrong Id List")');
+  await page.waitForFunction(() => document.querySelector('.version-notice')?.textContent.includes('keeping the current one'), null, { timeout: 5000 });
+  page.off('console', onConsole);
+  assert.ok(logged.some(t => t.includes("does not match the registry's ServiceListId tag:wrong,2026:id")),
+    `the mismatch is the reported cause: ${JSON.stringify(logged)}`);
+  assert.notEqual((await page.textContent('#list-name')).trim(), '5G Broadcast List');
 });

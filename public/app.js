@@ -15,6 +15,7 @@ let currentIdx  = -1;
 let activeGenre = '';
 let currentSession = 0;
 let currentVersion = null;
+let currentExpectedId = ''; // ServiceListId from the registry for the current list, if it came from one
 // Migrate stale relative URL stored by earlier versions
 (function migrateStoredUrl() {
   const stored = localStorage.getItem('dvbi-url');
@@ -807,8 +808,12 @@ function parseServiceList(doc) {
 // Multi-URI fallback per TS 103 770 §4.3.3.3-6: accepts a single URL or array of fallback URLs.
 // Resolves to 'installed' when a list was parsed and installed, 'kept' when the current list is
 // unchanged (fresh in the cache or 304), or 'failed'.
-async function loadServiceList(urlOrUrls) {
+async function loadServiceList(urlOrUrls, { expectedId } = {}) {
   const urls = Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls];
+  // The registry's ServiceListId for this list, checked against ServiceList@id (table 12); kept
+  // for later loads of the same list.
+  if (expectedId !== undefined) currentExpectedId = expectedId || '';
+  else if (urlOrUrls !== currentListUrl && !urls.includes(currentListUrl)) currentExpectedId = '';
   const primaryUrl = urls[0];
   const previousUrl = currentListUrl;
 
@@ -880,6 +885,8 @@ function installServiceList(url, body, contentType) {
       : `${url} returned ${what}, not a DVB-I service list. Check the URL in settings: it should be the service list itself, for example ${DEFAULT_URL}`);
   }
   const parsed = parseServiceList(doc);
+  const idProblem = DVBIDiscovery.idProblem(currentExpectedId, parsed.id);
+  if (idProblem) throw new Error(`${url}: ${idProblem}`);
 
   // Committed to a new list now — tear down current state and rebuild.
   DVBIPlayer.stop();
@@ -1937,9 +1944,57 @@ function parseEntryPoints(doc) {
         node = node.parentElement;
       }
     }
-    entries.push({ name: name || urls[0], urls });
+    entries.push({ name: name || urls[0], urls, ...offeringDetails(offering) });
   }
   return entries.length ? entries : null;
+}
+
+// The fields of a ServiceListOffering this client acts on (clause 8.5.3.2, tables 81, 83, 83a), for
+// DVBIDiscovery (discovery.js).
+function offeringDetails(offering) {
+  const kids = (node, name) => [...node.children].filter(c => c.localName === name);
+  const bool = (el, name) => el.getAttribute(name) === 'true' || el.getAttribute(name) === '1';
+  const deliveryEl = kids(offering, 'Delivery')[0];
+  const d = name => deliveryEl ? kids(deliveryEl, name).map(e => ({ required: bool(e, 'required') })) : [];
+  const appEl = deliveryEl && kids(deliveryEl, 'ApplicationDelivery')[0];
+  const delivery = deliveryEl ? {
+    dash: d('DASHDelivery')[0] || null,
+    dvbt: d('DVBTDelivery'), dvbc: d('DVBCDelivery'), dvbs: d('DVBSDelivery'),
+    rtsp: d('RTSPDelivery')[0] || null,
+    multicast: d('MulticastTSDelivery')[0] || null,
+    application: appEl ? {
+      required: bool(appEl, 'required'),
+      types: kids(appEl, 'ApplicationType').map(t => ({
+        contentType: t.getAttribute('contentType') || '',
+        xmlAitApplicationType: t.getAttribute('xmlAitApplicationType') || '',
+      })),
+    } : null,
+    other: kids(deliveryEl, 'OtherDeliveryParameters').map(o => ({
+      required: bool(o, 'required'),
+      extensionName: o.getAttribute('extensionName') || o.getAttribute('xsi:type') || '',
+    })),
+  } : null;
+  // Service list logo: RelatedMaterial with HowRelatedCS:2021:1001.1 (clause 5.2.6.1).
+  let logo = null;
+  for (const rm of kids(offering, 'RelatedMaterial')) {
+    const hr = rm.getElementsByTagNameNS('*', 'HowRelated')[0];
+    const mu = rm.getElementsByTagNameNS('*', 'MediaUri')[0];
+    if (hr && hr.getAttribute('href') === 'urn:dvb:metadata:cs:HowRelatedCS:2021:1001.1' && mu) { logo = mu.textContent.trim(); break; }
+  }
+  // The Provider of the ProviderOffering this offering belongs to, and its @regulatorFlag (table 10).
+  const providerEl = offering.parentElement && kids(offering.parentElement, 'Provider')[0];
+  return {
+    serviceListId: (kids(offering, 'ServiceListId')[0]?.textContent || '').trim(),
+    regulatorListFlag: bool(offering, 'regulatorListFlag'),
+    languages: kids(offering, 'Language').map(e => e.textContent.trim()).filter(Boolean),
+    targetCountries: kids(offering, 'TargetCountry').flatMap(e => e.textContent.trim().split(',')).map(c => c.trim()).filter(Boolean),
+    logo,
+    provider: providerEl ? {
+      name: (byLocalName(providerEl, 'Name')[0]?.textContent || '').trim(),
+      regulatorFlag: bool(providerEl, 'regulatorFlag'),
+    } : null,
+    delivery,
+  };
 }
 
 function parseSLRResponse(doc) {
@@ -1993,30 +2048,50 @@ function parseSLRResponse(doc) {
   return entries.length ? entries : null;
 }
 
-function showSLRPicker(entries) {
+// Offerings in the order DVBIDiscovery.arrange gives: the default (a regulator's list where there is
+// one) first and focused; offerings this client should not install are shown, disabled, with why.
+function showSLRPicker(entries, registry) {
   const container = $('slr-results');
   container.innerHTML = '';
   const label = document.createElement('div');
   label.className = 'settings-label';
   label.style.marginTop = '0.2rem';
-  label.textContent = `Found ${entries.length} service lists — select one:`;
+  const from = registry && registry.name
+    ? ` from ${registry.name}${registry.regulatorFlag ? ' (a recognized regulator)' : ''}` : '';
+  label.textContent = `Found ${entries.length} service lists${from} — select one:`;
   container.appendChild(label);
+  let defaultBtn = null;
   for (const entry of entries) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn';
-    btn.textContent = entry.name;
-    btn.title = entry.urls.join(' → ');
     btn.style.textAlign = 'left';
-    btn.addEventListener('click', () => {
-      container.hidden = true;
-      container.innerHTML = '';
-      settingsPanel.classList.remove('open');
-      settingsBtn.classList.remove('active');
-      loadServiceList(entry.urls); // pass all URLs for fallback
-    });
+    const tags = [
+      entry.isDefault ? 'default' : '',
+      entry.regulatorListFlag ? 'regulator list' : '',
+      entry.provider?.regulatorFlag ? 'provider is a regulator' : '',
+      (entry.languages || []).length ? (entry.languages || []).join(', ') : '',
+      (entry.targetCountries || []).length ? (entry.targetCountries || []).join(', ') : '',
+    ].filter(Boolean);
+    btn.innerHTML = `${entry.logo ? `<img src="${esc(entry.logo)}" alt="" style="height:1em;vertical-align:middle;margin-right:0.3em" onerror="this.remove()"/>` : ''}` +
+      `${esc(entry.name)}${tags.length ? ` <span class="settings-hint">(${esc(tags.join(' · '))})</span>` : ''}`;
+    btn.title = entry.problem ? `Not installed: ${entry.problem}` : entry.urls.join(' → ');
+    if (entry.problem) {
+      btn.disabled = true;
+      btn.dataset.problem = entry.problem;
+    } else {
+      btn.addEventListener('click', () => {
+        container.hidden = true;
+        container.innerHTML = '';
+        settingsPanel.classList.remove('open');
+        settingsBtn.classList.remove('active');
+        loadServiceList(entry.urls, { expectedId: entry.serviceListId }); // all URLs, for fallback
+      });
+    }
+    if (entry.isDefault) { btn.classList.add('active'); defaultBtn = btn; }
     container.appendChild(btn);
   }
   container.hidden = false;
+  if (defaultBtn) defaultBtn.focus();
 }
 
 $('slr-load-btn').addEventListener('click', async () => {
@@ -2038,15 +2113,21 @@ $('slr-load-btn').addEventListener('click', async () => {
     const r = await dvbiHttp.get(registryUrl);
     if (!r.ok) throw new Error(failureText(r));
     const doc = new DOMParser().parseFromString(r.body, 'application/xml');
-    const entries = parseSLRResponse(doc);
+    const found = parseSLRResponse(doc);
+    const entries = found && DVBIDiscovery.arrange(found, { country: cc, lang: langPref });
     if (entries) {
-      if (entries.length === 1) {
+      if (entries.length === 1 && !entries[0].problem) {
         settingsPanel.classList.remove('open');
         settingsBtn.classList.remove('active');
-        loadServiceList(entries[0].urls); // pass all fallback URLs
+        loadServiceList(entries[0].urls, { expectedId: entries[0].serviceListId }); // pass all fallback URLs
       } else {
         listNameEl.textContent = 'Select a service list';
-        showSLRPicker(entries);
+        // The ServiceListRegistryEntity and its @regulatorFlag (table 10).
+        const entity = byLocalName(doc, 'ServiceListRegistryEntity')[0];
+        showSLRPicker(entries, entity && {
+          name: (byLocalName(entity, 'Name')[0]?.textContent || '').trim(),
+          regulatorFlag: entity.getAttribute('regulatorFlag') === 'true' || entity.getAttribute('regulatorFlag') === '1',
+        });
       }
     } else {
       // Might already be a direct service list
