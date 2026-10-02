@@ -1,5 +1,28 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Service list handling per TS 103 770 V1.2.1 clause 5
+
+- **Channel numbers from one LCN table** (`public/servicelist.js`), chosen by the exact `@regionID`
+  (any of a table's `TargetRegion`s) and subscription packages, never combined with another table;
+  `LCNRange` numbers the services left without an LCN; `@visible="false"` services are left out of
+  the channel list and guide grid but reachable by number unless `@selectable="false"`. The fixed
+  800+ numbers for out-of-region services are gone; services no table numbers show `?`.
+- **Every `TargetRegion` of a service** counts, and the region filter is matched exactly as typed.
+- **A service without `ServiceType` is linear television.**
+- **Linked applications**: an application controlling media presentation (term 1.2) is shown in the
+  player instead of any stream, and closing it falls back to the next instance; one that cannot be
+  started discards its instance; instance-level applications override service-level ones of the
+  same type; after a fallback the toolbar offers that instance's own application; an XML AIT is
+  read to choose its HTML5 application by priority; outside scheduled hours the application for an
+  inactive service (term 2) is started. The page's CSP allows framing such applications.
+- **Content finished image** (`HowRelatedCS:2021:1000.2`) after a VoD instance has played out.
+- **Parental rating**: a threshold blocks rated services even without a PIN; `MinimumAge` is taken
+  for the user's country (the one last entered for a registry lookup); the content guide rating of
+  the programme on air takes precedence over the service rating.
+- **Subscription packages** are chosen in settings from the list's `SubscriptionPackageList`, and an
+  instance in packages the user has not chosen is not selected; the notice before playback is gone.
+- **The daily update check** runs at a random time of day instead of 03:00.
+
 ## 2026-10 — Service instance precedence per TS 103 770 V1.2.1 clause 5.2.13
 
 - **Availability is per instance** (`public/instances.js`): every Period and Interval of an

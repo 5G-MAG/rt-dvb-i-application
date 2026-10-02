@@ -26,7 +26,7 @@
        list where a plain-http DASH manifest was blocked outright before this fix) — it does not
        relax anything about the (separately mandatory) metadata-endpoint HTTPS requirement, which is
        an operator/deployment responsibility (see DEPLOYMENT.md), not something enforceable by CSP. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.dashjs.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self' http: https:; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; frame-src 'self' http: https:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.dashjs.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self' http: https:; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'"/>
   <title>DVB-I Client</title>
   <link rel="stylesheet" href="style.css"/>
   <link rel="stylesheet" href="blue-bar.css"/>
@@ -90,8 +90,13 @@
       </div>
       <div class="settings-label" style="margin-top:0.4rem">Region Filter</div>
       <div class="settings-row">
-        <input class="url-input" id="region-filter" type="text" maxlength="8" placeholder="e.g. GBR, EUR — leave blank for all" style="text-transform:uppercase"/>
+        <input class="url-input" id="region-filter" type="text" placeholder="a regionID of the list — blank for all" spellcheck="false"/>
         <button class="url-load-btn" id="region-apply-btn">Apply</button>
+      </div>
+      <div id="sub-packages" hidden>
+        <div class="settings-label" style="margin-top:0.4rem">Subscription Packages</div>
+        <div id="sub-packages-list" class="settings-row" style="flex-wrap:wrap;gap:0.3rem 0.8rem"></div>
+        <div id="sub-packages-warn" class="settings-hint-warn" hidden>This service list needs one of its packages selected</div>
       </div>
       <div class="settings-label" style="margin-top:0.4rem">Custom List <span id="custom-list-count" class="settings-hint"></span></div>
       <div class="settings-row">
@@ -145,6 +150,17 @@
         <div id="play-error-msg" class="play-error-msg">All streams unavailable</div>
         <button id="play-error-retry" class="play-error-retry">↺ Retry</button>
       </div>
+
+      <!-- Linked application presenting the service (TS 103 770 V1.2.1 clause 5.2.3.2) or shown
+           outside its scheduled hours (clause 5.2.5.3) -->
+      <div id="app-frame-wrap" class="app-frame-wrap" hidden>
+        <iframe id="app-frame" class="app-frame" title="Linked application" referrerpolicy="no-referrer"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+        <button id="app-frame-close" class="app-frame-close" title="Close the application">×</button>
+      </div>
+
+      <!-- Content finished image (clause 5.2.7.3) -->
+      <img id="content-finished" class="content-finished" alt="" hidden/>
 
       <!-- Subscription gate (A184r2 §4.3) -->
       <div id="sub-gate" class="play-error sub-gate" hidden>
@@ -356,6 +372,7 @@
 <script src="epg.js"></script>
 <script src="mbms-url.js"></script>
 <script src="instances.js"></script>
+<script src="servicelist.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -156,6 +156,73 @@ function fixtureSelectXml(base) {
 </ServiceList>`;
 }
 
+// Service list handling (clauses 5.2.3, 5.2.4.2, 5.2.5.3, 5.2.7.3, 5.5.2, 5.5.4, 5.5.12, 5.5.28, 5.5.29).
+function fixtureHandlingXml(base) {
+  const dash = name => `<DASHDeliveryParameters><UriBasedLocation contentType="application/dash+xml"><dvbisd-t:URI>${base}/dash/${name}.mpd</dvbisd-t:URI></UriBasedLocation></DASHDeliveryParameters>`;
+  const app = (term, url, type = 'text/html') => `<RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:LinkedApplicationCS:2019:${term}"/><tva:MediaLocator><tva:MediaUri contentType="${type}">${url}</tva:MediaUri></tva:MediaLocator></RelatedMaterial>`;
+  const service = (uid, name, body, extra = '') => `
+  <Service version="1">
+    <UniqueIdentifier>tag:h,2026:${uid}</UniqueIdentifier>
+    ${body}
+    <ServiceName>${name}</ServiceName>
+    <ProviderName>P</ProviderName>${extra}
+  </Service>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024" xmlns:tva="urn:tva:metadata:2024"
+  xmlns:dvbisd-t="urn:dvb:metadata:servicediscovery-types:2023"
+  id="tag:h,2026:list" version="1" xml:lang="en">
+  <Name>Handling List</Name>
+  <ProviderName>P</ProviderName>
+  <SubscriptionPackageList><SubscriptionPackage>Gold</SubscriptionPackage></SubscriptionPackageList>
+  <LCNTableList>
+    <LCNTable>
+      <TargetRegion>R-N</TargetRegion><TargetRegion>R-NE</TargetRegion>
+      <LCN channelNumber="5" serviceRef="tag:h,2026:multi"/>
+    </LCNTable>
+    <LCNTable>
+      <LCN channelNumber="1" serviceRef="tag:h,2026:linear"/>
+      <LCN channelNumber="2" serviceRef="tag:h,2026:hidden" visible="false"/>
+      <LCN channelNumber="3" serviceRef="tag:h,2026:hiddennosel" visible="false" selectable="false"/>
+      <LCNRange start="100" end="199" fillMethod="fillGaps"/>
+    </LCNTable>
+  </LCNTableList>${
+  service('linear', 'Linear Default', `<ServiceInstance>${dash('linear')}</ServiceInstance>`)}${
+  service('multi', 'Multi Region', `<ServiceInstance>${dash('multi')}</ServiceInstance><TargetRegion>R-S</TargetRegion><TargetRegion>R-NE</TargetRegion>`)}${
+  service('hidden', 'Hidden', `<ServiceInstance>${dash('hidden')}</ServiceInstance>`)}${
+  service('hiddennosel', 'Hidden NoSel', `<ServiceInstance>${dash('hiddennosel')}</ServiceInstance>`)}${
+  service('app', 'App Service', `
+    <ServiceInstance priority="0">${app('1.2', `${base}/app/controlling.html`)}${dash('ignored')}</ServiceInstance>
+    <ServiceInstance priority="1">${app('1.1', `${base}/app/parallel.html`)}${dash('appfallback')}</ServiceInstance>`,
+    app('1.1', `${base}/app/service.html`))}${
+  service('ait', 'AIT Service', `<ServiceInstance>${app('1.2', `${base}/app/ait.xml`, 'application/vnd.dvb.ait+xml')}</ServiceInstance>`)}${
+  service('aitnone', 'AIT None', `
+    <ServiceInstance priority="0">${app('1.2', `${base}/app/ait-hbbtv.xml`, 'application/vnd.dvb.ait+xml')}</ServiceInstance>
+    <ServiceInstance priority="1">${dash('aitnone')}</ServiceInstance>`)}${
+  service('offair', 'Off Air App', `<ServiceInstance><Availability><Period validTo="2020-01-01T00:00:00Z"/></Availability>${dash('offair')}</ServiceInstance>`,
+    app('2', `${base}/app/offair.html`))}${
+  service('gold', 'Gold Only', `<ServiceInstance><SubscriptionPackage>Gold</SubscriptionPackage>${dash('gold')}</ServiceInstance>`)}${
+  service('rated', 'Rated', `<ServiceInstance>${dash('rated')}</ServiceInstance>`, '<ParentalRating><MinimumAge>18</MinimumAge></ParentalRating>')}${
+  service('vod', 'VoD', `<ServiceInstance>${dash('vod')}<RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2"/><tva:MediaLocator><tva:MediaUri contentType="image/png">${base}/img/finished.png</tva:MediaUri></tva:MediaLocator></RelatedMaterial></ServiceInstance>`)}
+</ServiceList>`.replace(/<ServiceInstance([^>]*)>([\s\S]*?)<\/ServiceInstance>/g, (m, attrs, inner) => {
+    // Schema order inside ServiceInstance: RelatedMaterial before delivery parameters.
+    const rm = (inner.match(/<RelatedMaterial>[\s\S]*?<\/RelatedMaterial>/g) || []).join('');
+    return `<ServiceInstance${attrs}>${rm}${inner.replace(/<RelatedMaterial>[\s\S]*?<\/RelatedMaterial>/g, '')}</ServiceInstance>`;
+  });
+}
+
+// An XML AIT with an HbbTV application of higher priority, which this client cannot start, and an
+// HTML5 one (clause 5.2.4.2).
+function fixtureAit(base, hbbtvOnly = false) {
+  const a = (type, prio, loc) => `<mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type>
+    <mhp:priority>${prio}</mhp:priority></mhp:applicationDescriptor>
+    <mhp:applicationTransport><mhp:URLBase>${base}/app/</mhp:URLBase></mhp:applicationTransport>
+    <mhp:applicationLocation>${loc}</mhp:applicationLocation></mhp:Application>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<mhp:ServiceDiscovery xmlns:mhp="urn:dvb:mhp:2009"><mhp:ApplicationDiscovery DomainName="example"><mhp:ApplicationList>
+${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' : a('text/html', 1, 'fromait.html')}
+</mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
+}
+
 before(async () => {
   if (!playwright) { console.log('playwright not installed — skipping E2E suite'); return; }
 
@@ -180,6 +247,11 @@ before(async () => {
   });
   app.get('/epg/gone', (req, res) => { hits.cg404Guide++; res.status(404).end(); });
   app.get('/service-list-select.xml', (req, res) => res.type('application/xml').send(fixtureSelectXml(baseUrl)));
+  app.get('/service-list-handling.xml', (req, res) => res.type('application/xml').send(fixtureHandlingXml(baseUrl)));
+  app.get('/app/:page.html', (req, res) => res.type('text/html').send(`<!doctype html><title>${req.params.page}</title><p>${req.params.page}</p>`));
+  app.get('/app/ait.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)));
+  app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
+  app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
   // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
@@ -436,4 +508,120 @@ test('instances that cannot play in a browser are discarded before any is tried'
   assert.match(msg, /conditional access only/);
   assert.match(msg, /DRM systems this client does not know/);
   assert.equal(await page.evaluate(() => window.__plays.length), 0, 'nothing was handed to the player');
+});
+
+// Service list handling, TS 103 770 V1.2.1 clause 5. The player is a recorder, as above.
+async function openHandlingList() {
+  await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => localStorage.clear());
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-handling.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name:text("Linear Default")', { timeout: 10000 });
+  await page.evaluate(() => {
+    window.dashjs = window.dashjs || {};
+    window.__plays = [];
+    DVBIPlayer.play = (video, url) => { window.__plays.push(url); };
+  });
+}
+// A locked service's name carries a lock sign in front.
+const card = name => page.locator('.ch-card').filter({ has: page.locator('.ch-name', { hasText: new RegExp(`^(🔒 )?${name}$`) }) });
+const lcnOf = async name => (await card(name).locator('.ch-lcn').textContent()).trim();
+const plays = () => page.evaluate(() => window.__plays);
+
+test('channel numbers: one table, @visible, @selectable, LCNRange, every TargetRegion', { skip: !playwright }, async () => {
+  await openHandlingList();
+  assert.equal(await lcnOf('Linear Default'), '1');
+  assert.equal(await card('Hidden').count(), 1);
+  assert.equal(await card('Hidden').isHidden(), true, '@visible false: not in the channel list');
+  assert.equal(await lcnOf('Multi Region'), '100', 'no LCN in the national table: numbered from the LCNRange');
+
+  // Direct entry reaches a hidden selectable service, not a hidden unselectable one.
+  await page.keyboard.press('2');
+  await page.waitForSelector('#tb-name:text("Hidden")', { timeout: 5000 });
+  await page.keyboard.press('3');
+  await new Promise(r => setTimeout(r, 2000));
+  assert.equal((await page.textContent('#tb-name')).trim(), 'Hidden', '@selectable false: number 3 selects nothing');
+
+  // Region R-NE: its table alone applies (not combined with the national one), and a service whose
+  // second TargetRegion is R-NE is shown.
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); });
+  await page.fill('#region-filter', 'R-NE');
+  await page.click('#region-apply-btn');
+  assert.equal(await lcnOf('Multi Region'), '5');
+  assert.equal(await card('Multi Region').isHidden(), false);
+  assert.equal(await lcnOf('Linear Default'), '?', 'the national table is not combined with the regional one');
+  await page.fill('#region-filter', '');
+  await page.click('#region-apply-btn');
+});
+
+test('a service without ServiceType is linear television', { skip: !playwright }, async () => {
+  await card('Linear Default').click();
+  await page.waitForFunction(() => window.__plays.length > 0, null, { timeout: 5000 });
+  assert.equal((await page.textContent('#overlay-type')).trim(), 'Linear TV');
+});
+
+test('an application controlling media presentation presents the service; its exit falls back', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await card('App Service').click();
+  await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/controlling\.html\?sid=/);
+  assert.deepEqual(await plays(), [], 'no media stream is presented, delivery parameters ignored');
+
+  await page.click('#app-frame-close');
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await plays())[0], /appfallback\.mpd$/, 'on exit the instance is discarded and the next one plays');
+  assert.equal(await page.isHidden('#app-frame-wrap'), true);
+  assert.equal(await page.getAttribute('#tb-app-btn', 'data-url'), `${baseUrl}/app/parallel.html`,
+    'the fallback instance\'s own application overrides the service-level one of the same type');
+});
+
+test('an XML AIT is processed to choose the application', { skip: !playwright }, async () => {
+  await card('AIT Service').click();
+  await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/fromait\.html\?sid=/, 'the HTML5 application, not the HbbTV one');
+});
+
+test('an instance whose controlling application cannot be started is discarded', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await card('AIT None').click();
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await plays())[0], /aitnone\.mpd$/, 'the XML AIT offers only HbbTV, which this client cannot start');
+  assert.equal(await page.isHidden('#app-frame-wrap'), true);
+});
+
+test('outside scheduled hours the application for an inactive service is started', { skip: !playwright }, async () => {
+  await card('Off Air App').click();
+  await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/offair\.html\?sid=/);
+});
+
+test('subscription packages decide which instances can be selected', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await card('Gold Only').click();
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  assert.match(await page.textContent('#play-error-msg'), /subscription packages this client is not associated with/);
+  assert.deepEqual(await plays(), []);
+
+  await page.evaluate(() => { document.getElementById('settings-panel').classList.add('open'); });
+  await page.check('#sub-packages-list input[type=checkbox]');
+  await card('Gold Only').click();
+  await page.waitForFunction(() => window.__plays.length === 1, null, { timeout: 5000 });
+  assert.match((await plays())[0], /gold\.mpd$/);
+});
+
+test('parental rating is enforced with a threshold even without a PIN', { skip: !playwright }, async () => {
+  await page.evaluate(() => { window.__plays = []; });
+  await page.selectOption('#pg-threshold', '16');
+  await card('Rated').click();
+  await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
+  assert.match(await page.textContent('#play-error-msg'), /Blocked by parental control: rated 18\+/);
+  assert.deepEqual(await plays(), []);
+  await page.selectOption('#pg-threshold', '');
+});
+
+test('a content finished image is shown when the VoD has played out', { skip: !playwright }, async () => {
+  await card('VoD').click();
+  await page.waitForFunction(() => window.__plays.some(u => u.endsWith('vod.mpd')), null, { timeout: 5000 });
+  await page.evaluate(() => document.getElementById('video').dispatchEvent(new Event('ended')));
+  await page.waitForSelector('#content-finished:not([hidden])', { timeout: 5000 });
+  assert.equal(await page.getAttribute('#content-finished', 'src'), `${baseUrl}/img/finished.png`);
 });

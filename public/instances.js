@@ -88,8 +88,14 @@ const DVBIInstances = (() => {
   // Why an instance can be known in advance not to play in this browser, or null (clause 5.2.13:
   // "Service instances that contain video where the DVB-I client can determine in advance that it
   // would not be able to display any video shall be discarded"). `caps` describes the browser:
-  //   { dash, hls, eme, keySystem(id) }  keySystem returns the EME key system for a DRMSystemId or null
+  //   { dash, hls, eme, keySystem(id), packages }  keySystem returns the EME key system for a
+  //   DRMSystemId or null; packages are the subscription packages the client is associated with
   function cannotPlay(inst, caps) {
+    // Table 16, SubscriptionPackage: "If present, this service instance is selectable only by a
+    // DVB-I client that is associated to one of the SubscriptionPackage elements listed here."
+    if (inst.packages && inst.packages.length && !inst.packages.some(p => (caps.packages || []).includes(p))) {
+      return 'only in subscription packages this client is not associated with';
+    }
     if (inst.type === 'multicast') return 'multicast delivery cannot be received in a browser';
     if (inst.type === 'application/dash+xml' && !caps.dash) return 'no DASH player is available';
     if (inst.type === 'application/vnd.apple.mpegurl' && !caps.hls) return 'no HLS player is available';

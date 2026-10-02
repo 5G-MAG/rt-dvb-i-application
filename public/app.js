@@ -139,6 +139,7 @@ const epgGridInfo   = $('epg-grid-info');
 const tbGridBtn     = $('tb-grid-btn');
 const tbShareBtn    = $('tb-share-btn');
 const themeBtn      = $('theme-btn');
+const contentFinishedEl = $('content-finished');
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -308,6 +309,16 @@ videoEl.addEventListener('timeupdate', () => {
   seekCurrent.textContent = fmtTime(videoEl.currentTime);
 });
 
+// "When the DVB-I client has played out the VoD MPD or all of the items in the playlist, it should
+// present a Content Finished image if one is signalled." (clause 5.2.7.3)
+videoEl.addEventListener('ended', () => {
+  if (currentIdx < 0 || isCatchup) return;
+  const img = services[currentIdx]?.instances?.[currentInstIdx]?.contentFinished;
+  if (!img) return;
+  contentFinishedEl.src = img.url;
+  contentFinishedEl.hidden = false;
+});
+
 seekBar.addEventListener('click', e => {
   const rect = seekBar.getBoundingClientRect();
   const frac = (e.clientX - rect.left) / rect.width;
@@ -363,63 +374,61 @@ function failureText(r) {
   return `HTTP ${r.status}${why ? `: ${why}` : ''}`;
 }
 
-// ── LCN region-aware assignment (A184r2 §4.8, Table 4.8-1) ───────────────────
+// ── Channel numbers (TS 103 770 V1.2.1 clauses 5.5.10 to 5.5.12, 5.5.29) ──────────────────
 
-function buildLCNMap(tables, svcs, region) {
-  const regionUpper = (region || '').toUpperCase();
-  const OVERFLOW_BASE = 800;
-  let overflowNext = OVERFLOW_BASE;
-  const map = {};
-
-  // Tables whose TargetRegion matches the selected region
-  const matchingTables = regionUpper
-    ? tables.filter(t => t.targetRegion && t.targetRegion.toUpperCase().startsWith(regionUpper))
-    : [];
-  // Tables with no TargetRegion (apply globally)
-  const globalTables = tables.filter(t => !t.targetRegion);
-
-  for (const svc of svcs) {
-    const svcRegionUpper = (svc.targetRegion || '').toUpperCase();
-    const svcMatchesRegion = !svc.targetRegion || !regionUpper
-      || svcRegionUpper === regionUpper || svcRegionUpper.startsWith(regionUpper);
-
-    // Look up service in region-matching tables first
-    let found = null;
-    for (const tbl of matchingTables) {
-      if (tbl.entries[svc.uid] != null) { found = tbl.entries[svc.uid]; break; }
-    }
-
-    if (found !== null) {
-      // LCNTable matches region: use its LCN regardless of Service.TargetRegion
-      map[svc.uid] = found;
-    } else if (matchingTables.length > 0 && !svcMatchesRegion) {
-      // LCNTable matches region, no LCN for this service, Service.TargetRegion doesn't match:
-      // assign overflow channel number (should-not-install case in Table 4.8-1)
-      map[svc.uid] = overflowNext++;
-    } else {
-      // No region-matching table — fall back to global/unregioned tables
-      for (const tbl of globalTables) {
-        if (tbl.entries[svc.uid] != null) { found = tbl.entries[svc.uid]; break; }
-      }
-      if (found !== null) {
-        map[svc.uid] = found;
-      } else if (regionUpper && !svcMatchesRegion) {
-        // No table at all, Service.TargetRegion doesn't match: overflow
-        map[svc.uid] = overflowNext++;
-      }
-      // If svcMatchesRegion (or no region filter): no LCN available — stays null
-    }
-  }
-  return map;
-}
-
+// One LCN table, selected by region and subscription packages, numbers the services; tables are
+// never combined (clause 5.5.12). LCNRange numbers the rest in document order.
 function rebuildLCNs() {
-  const map = buildLCNMap(rawLCNTables, services, regionFilter);
-  services.forEach(svc => { svc.lcn = map[svc.uid] ?? null; });
-  services.sort((a, b) => (a.lcn ?? 9999) - (b.lcn ?? 9999));
+  const table = DVBIServiceList.selectLcnTable(rawLCNTables, regionFilter, clientPackages());
+  const inDocOrder = [...services].sort((a, b) => (a.docOrder ?? 0) - (b.docOrder ?? 0));
+  const map = DVBIServiceList.assignChannelNumbers(table, inDocOrder);
+  services.forEach(svc => {
+    const n = map[svc.uid];
+    svc.lcn = n ? n.lcn : null;
+    svc.numbering = n || null;
+  });
+  services.sort((a, b) => (a.lcn ?? Infinity) - (b.lcn ?? Infinity) || (a.docOrder ?? 0) - (b.docOrder ?? 0));
 }
 
 // ── Service list parsing ──────────────────────────────────────────────────────
+
+// RelatedMaterial elements directly inside `parent` (a Service or a ServiceInstance), as
+// { href, uris: [{ url, contentType, lang }] }. HowRelated and MediaUri are TV-Anytime elements;
+// matched by local name so older namespaces parse too.
+function relatedMaterial(parent) {
+  return [...parent.children].filter(c => c.localName === 'RelatedMaterial').map(rm => {
+    const hr = [...rm.getElementsByTagNameNS('*', 'HowRelated')][0];
+    const uris = [...rm.getElementsByTagNameNS('*', 'MediaUri')].map(mu => ({
+      url: mu.textContent.trim(),
+      contentType: mu.getAttribute('contentType') || '',
+      lang: mu.parentElement?.getAttribute('contentLanguage') || '',
+    })).filter(u => u.url);
+    return { href: hr?.getAttribute('href') || '', uris };
+  });
+}
+
+// Linked applications (clause 5.2.3.1): HowRelated from LinkedApplicationCS:2019 and a MediaUri.
+function parseLinkedApps(parent) {
+  const apps = [];
+  for (const rm of relatedMaterial(parent)) {
+    const term = DVBIServiceList.linkedAppTerm(rm.href);
+    if (!term || !rm.uris.length) continue;
+    apps.push({ term, url: rm.uris[0].url, contentType: rm.uris[0].contentType });
+  }
+  return apps;
+}
+
+// Content finished image (clause 5.2.7.3), HowRelatedCS:2021:1000.2: the image in the preferred
+// audio language if there is one, else the first JPEG or PNG ("At least one content finished image
+// shall be provided with the Media Type image/jpeg or image/png"), else the first image.
+const CONTENT_FINISHED = 'urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2';
+function parseContentFinishedImage(parent) {
+  const rm = relatedMaterial(parent).find(r => r.href === CONTENT_FINISHED);
+  if (!rm || !rm.uris.length) return null;
+  const jpegPng = rm.uris.filter(u => /^image\/(jpeg|png)$/i.test(u.contentType));
+  return rm.uris.map(u => ({ url: u.url, contentType: u.contentType, lang: u.lang }))
+    .find(u => langPref && u.lang.toLowerCase().startsWith(langPref)) || jpegPng[0] || rm.uris[0];
+}
 
 // Availability of a service instance (clause 5.5.15, table 26) as the model of instances.js, or null
 // when there is none. Times of day are Zulu (clause 5.5.17), so they are read as UTC.
@@ -470,31 +479,50 @@ function parseServiceList(doc) {
   const version = root?.getAttribute('version') || null;
   const name    = getNS(doc, 'Name', NS) || 'DVB-I Service List';
 
-  // Parse LCNTables with optional TargetRegion (A184r2 §4.8 / Table 4.8-1)
+  // LCN tables (clauses 5.5.10 to 5.5.12, 5.5.29). Boolean attributes default to true.
+  const flag = (el, name, dflt) => { const v = el.getAttribute(name); return v == null ? dflt : (v === 'true' || v === '1'); };
   const lcnTables = [];
   for (const tbl of doc.getElementsByTagNameNS(NS, 'LCNTable')) {
-    // TargetRegion is a child element (RegionIdRefType); tolerate the legacy attribute form too
-    const trChild = tbl.getElementsByTagNameNS('*', 'TargetRegion')[0];
-    const tableRegion = (trChild && trChild.textContent.trim())
-      || tbl.getAttribute('TargetRegion') || tbl.getAttribute('targetRegion') || null;
-    const entries = {};
-    for (const lcn of tbl.getElementsByTagNameNS(NS, 'LCN')) {
-      const ref = lcn.getAttribute('serviceRef');
-      const ch  = parseInt(lcn.getAttribute('channelNumber'), 10);
-      if (ref && !isNaN(ch)) entries[ref] = ch;
-    }
-    lcnTables.push({ targetRegion: tableRegion, entries });
+    const kids = name => [...tbl.children].filter(c => c.localName === name);
+    const targetRegions = kids('TargetRegion').map(e => e.textContent.trim()).filter(Boolean);
+    // tolerate the legacy attribute form too
+    const legacyRegion = tbl.getAttribute('TargetRegion') || tbl.getAttribute('targetRegion');
+    if (!targetRegions.length && legacyRegion) targetRegions.push(legacyRegion);
+    const entries = kids('LCN').map(l => ({
+      channelNumber: parseInt(l.getAttribute('channelNumber'), 10),
+      serviceRef: l.getAttribute('serviceRef'),
+      visible: flag(l, 'visible', true),
+      selectable: flag(l, 'selectable', true),
+    })).filter(e => e.serviceRef && !isNaN(e.channelNumber));
+    const ranges = kids('LCNRange').map(r => ({
+      start: parseInt(r.getAttribute('start'), 10),
+      end: r.getAttribute('end') != null ? parseInt(r.getAttribute('end'), 10) : null,
+      priority: parseInt(r.getAttribute('priority') || '0', 10) || 0,
+      fillMethod: r.getAttribute('fillMethod') || 'startFromHighest',   // schema default
+      serviceOrigin: r.getAttribute('serviceOrigin') || 'dvbi',         // schema default
+      serviceType: r.getAttribute('serviceType') || null,
+      serviceGenre: r.getAttribute('serviceGenre') || null,
+    })).filter(r => !isNaN(r.start));
+    const packages = kids('SubscriptionPackage').map(e => e.textContent.trim()).filter(Boolean);
+    lcnTables.push({ targetRegions, packages, entries, ranges });
   }
   // Backward compat: loose LCN elements (service lists without LCNTable wrapper)
   if (!lcnTables.length) {
-    const entries = {};
-    for (const lcn of doc.getElementsByTagNameNS(NS, 'LCN')) {
-      const ref = lcn.getAttribute('serviceRef');
-      const ch  = parseInt(lcn.getAttribute('channelNumber'), 10);
-      if (ref && !isNaN(ch)) entries[ref] = ch;
-    }
-    if (Object.keys(entries).length) lcnTables.push({ targetRegion: null, entries });
+    const entries = [...doc.getElementsByTagNameNS(NS, 'LCN')].map(l => ({
+      channelNumber: parseInt(l.getAttribute('channelNumber'), 10),
+      serviceRef: l.getAttribute('serviceRef'),
+      visible: flag(l, 'visible', true),
+      selectable: flag(l, 'selectable', true),
+    })).filter(e => e.serviceRef && !isNaN(e.channelNumber));
+    if (entries.length) lcnTables.push({ targetRegions: [], packages: [], entries, ranges: [] });
   }
+
+  // SubscriptionPackageList (clause 5.5.25): the packages a client can be associated with.
+  const spl = [...root.children].find(c => c.localName === 'SubscriptionPackageList');
+  const subscriptionPackages = spl
+    ? { packages: [...spl.children].filter(c => c.localName === 'SubscriptionPackage').map(e => e.textContent.trim()).filter(Boolean),
+        allowNoPackage: flag(spl, 'allowNoPackage', true) }
+    : null;
 
   // Build ContentGuideSource maps: CGSID → schedule URL and now/next URL (TS 103 770 §6.5.3)
   const cgsMap        = {};
@@ -517,7 +545,10 @@ function parseServiceList(doc) {
     const name     = getNS(svc, 'ServiceName', NS);
     const provider = getNS(svc, 'ProviderName', NS);
     const typeEl   = svc.getElementsByTagNameNS(NS, 'ServiceType')[0];
-    const svcType  = (typeEl?.getAttribute('href') || '').split(':').pop() || 'unknown';
+    // Table 15, ServiceType: "If not specified, the service contains linear television."
+    const serviceTypeHref = typeEl?.getAttribute('href') || 'urn:dvb:metadata:cs:ServiceTypeCS:2019:linear';
+    const svcType  = serviceTypeHref.split(':').pop() || 'linear';
+    const genreHrefs = [...svc.children].filter(c => c.localName === 'ServiceGenre').map(g => g.getAttribute('href')).filter(Boolean);
 
     let logo = null;
     for (const rm of svc.getElementsByTagNameNS(NS, 'RelatedMaterial')) {
@@ -532,23 +563,10 @@ function parseServiceList(doc) {
       }
     }
 
-    // Linked application (TS 103 770 §5.2.3.1, A184r2 §5.2) — RelatedMaterial with LinkedApplicationCS HowRelated
-    let linkedApp = null;
-    for (const rm of svc.getElementsByTagNameNS(NS, 'RelatedMaterial')) {
-      const hr = rm.getElementsByTagNameNS(NS_TVA, 'HowRelated')[0]
-              || rm.getElementsByTagNameNS(NS, 'HowRelated')[0];
-      if (hr) {
-        const href = hr.getAttribute('href') || '';
-        if (href.includes('LinkedApplicationCS') || href.includes(':2019:')) {
-          const mu = rm.getElementsByTagNameNS(NS_TVA, 'MediaUri')[0]
-                  || rm.getElementsByTagNameNS(NS, 'MediaUri')[0];
-          if (mu) {
-            const url = mu.textContent.trim();
-            if (url) { linkedApp = { url, type: mu.getAttribute('contentType') || '' }; break; }
-          }
-        }
-      }
-    }
+    // Linked applications and the content finished image signalled on the Service itself (clauses
+    // 5.2.3 and 5.2.7.3); those of each ServiceInstance are read with the instance.
+    const serviceApps = parseLinkedApps(svc);
+    const contentFinished = parseContentFinishedImage(svc);
 
     // Multi-language name: prefer no-lang (universal), then first
     const nameEls = [...svc.getElementsByTagNameNS(NS, 'ServiceName')];
@@ -573,16 +591,18 @@ function parseServiceList(doc) {
       }
     }
 
-    // Parental rating — ParentalRating/MinimumAge at service level (TS 103 770 §5.5.28)
-    // Also accept old ParentalGuidance element for backward compat
-    let parentalRating = null;
+    // Parental rating — every ParentalRating/MinimumAge with its @countryCodes (clause 5.5.28,
+    // table 37f). Also accept old ParentalGuidance element for backward compat
+    const ratings = [];
     const prEl = svc.getElementsByTagNameNS(NS, 'ParentalRating')[0]
       || svc.getElementsByTagNameNS(NS, 'ParentalGuidance')[0];
     if (prEl) {
-      const ma = prEl.getElementsByTagNameNS(NS, 'MinimumAge')[0]
-        || prEl.getElementsByTagNameNS(NS_TVA, 'MinimumAge')[0]
-        || prEl.getElementsByTagName('MinimumAge')[0];
-      if (ma) parentalRating = ma.textContent.trim();
+      for (const ma of prEl.getElementsByTagNameNS('*', 'MinimumAge')) {
+        const age = parseInt(ma.textContent.trim(), 10);
+        if (isNaN(age)) continue;
+        const countries = (ma.getAttribute('countryCodes') || '').split(',').map(c => c.trim()).filter(Boolean);
+        ratings.push({ age, countries });
+      }
     }
 
     const instances = [];
@@ -597,6 +617,22 @@ function parseServiceList(doc) {
       // (clause 5.5.4, table 16)
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
       const availability = parseAvailability(inst.getElementsByTagNameNS(NS, 'Availability')[0]);
+      // Table 16, SubscriptionPackage: the packages this instance is selectable with.
+      const packages = [...inst.children].filter(c => c.localName === 'SubscriptionPackage')
+        .map(e => e.textContent.trim()).filter(Boolean);
+      // Applications that apply to this instance, instance level over service level (clause 5.2.3.4),
+      // and its content finished image, instance level over service level (table 16, RelatedMaterial).
+      const apps = DVBIServiceList.effectiveApps(serviceApps, parseLinkedApps(inst));
+      const instExtra = { packages, apps, contentFinished: parseContentFinishedImage(inst) || contentFinished };
+
+      // An application controlling media presentation: "no media stream shall be presented by the
+      // DVB-I client when the service is selected" and "If delivery parameters elements are included
+      // then they shall be ignored by the DVB-I client." (clause 5.2.3.2)
+      const controllingApp = apps.find(a => a.term === '1.2');
+      if (controllingApp) {
+        instances.push({ priority, label, availability, type: 'application', url: controllingApp.url, app: controllingApp, protection: null, ...instExtra });
+        continue;
+      }
 
       // Broadcast-only delivery (DVB-T/S/C tuning triplet, TS 103 770 §5.5.18 Delivery Parameters) — a browser has no TV tuner,
       // so these never yield a playable instance. Tracked so the service can still be listed
@@ -656,7 +692,7 @@ function parseServiceList(doc) {
       if (dash) {
         const url = uriText(dash); // URI may be dvbisd-t:URI (types ns) or legacy <URI>
         const origSource = dash.getElementsByTagNameNS('*', 'OriginalDeliverySource')[0]?.textContent.trim() || null;
-        if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage, availability });
+        if (url) instances.push({ priority, label, url, type: 'application/dash+xml', hasAudioDescription, hasHardOfHearing, protection, origSource, subtitleCarriage, availability, ...instExtra });
       }
 
       // 5G Broadcast: IdentifierBasedDeliveryParameters holding an mbms:// locator, which TS 103 770
@@ -696,7 +732,7 @@ function parseServiceList(doc) {
         const extUrl = uriEl?.textContent.trim();
         if (extUrl && mimeType) {
           const knownType = ['application/vnd.apple.mpegurl', 'application/dash+xml'].includes(mimeType) ? mimeType : null;
-          if (knownType) instances.push({ priority, label, url: extUrl, type: knownType, hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, extensionName: extAttr || null, availability });
+          if (knownType) instances.push({ priority, label, url: extUrl, type: knownType, hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, extensionName: extAttr || null, availability, ...instExtra });
         }
       }
 
@@ -715,15 +751,15 @@ function parseServiceList(doc) {
           const u = uriText(mc);
           if (u) mcUrl = u;
         }
-        if (mcUrl) instances.push({ priority, label, url: mcUrl, type: 'multicast', hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, availability });
+        if (mcUrl) instances.push({ priority, label, url: mcUrl, type: 'multicast', hasAudioDescription, hasHardOfHearing, protection, origSource: null, subtitleCarriage, availability, ...instExtra });
       }
     }
 
-    // TargetRegion — regionID (lowercase per TS 103 770 §5.5.2); also accept uppercase for backward compat
-    const trEl = svc.getElementsByTagNameNS(NS, 'TargetRegion')[0];
-    const targetRegion = trEl
-      ? (trEl.getAttribute('regionID') || trEl.getAttribute('RegionID') || trEl.textContent.trim() || null)
-      : null;
+    // TargetRegion — every one of them (table 15); a regionID as text, also accept the attribute form
+    // of older lists
+    const targetRegions = [...svc.children].filter(c => c.localName === 'TargetRegion')
+      .map(tr => tr.getAttribute('regionID') || tr.getAttribute('RegionID') || tr.textContent.trim())
+      .filter(Boolean);
 
     // ContentGuideServiceRef is at Service level (TS 103 770 §5.5.2); also check ServiceInstance for old XML
     let epgEndpoint     = listEpgEndpoint;
@@ -740,9 +776,8 @@ function parseServiceList(doc) {
       }
     }
 
-    // Subscription package
-    const subPkgEl = svc.getElementsByTagNameNS(NS, 'SubscriptionPackage')[0];
-    const subscriptionPackage = subPkgEl ? subPkgEl.textContent.trim() : null;
+    // Subscription packages of any instance, for the badge; selection applies them per instance.
+    const subscriptionPackages = [...new Set(instances.flatMap(i => i.packages || []))];
 
     // Service restriction (subscription / conditional-access)
     const restrictEl = svc.getElementsByTagNameNS(NS, 'ServiceRestriction')[0];
@@ -760,11 +795,11 @@ function parseServiceList(doc) {
     const instanceCount = svc.getElementsByTagNameNS(NS, 'ServiceInstance').length;
     const noIpDelivery = instances.length === 0 && instanceCount > 0;
     if (displayName && (instances.length || noIpDelivery)) {
-      parsed.push({ uid, name: displayName, provider, svcType, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, parentalRating, targetRegion, subscriptionPackage, serviceRestriction, linkedApp, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g });
+      parsed.push({ uid, name: displayName, provider, svcType, serviceType: serviceTypeHref, genres: genreHrefs, logo, instances, lcn: null, epgEndpoint, nowNextEndpoint, genre, ratings, targetRegions, subscriptionPackages, serviceRestriction, serviceApps, additionalServiceParams, noIpDelivery, hasBroadcastDelivery, mbms5g, docOrder: parsed.length });
     }
   }
 
-  return { name, version, services: parsed, lcnTables };
+  return { name, version, id: root?.getAttribute('id') || '', services: parsed, lcnTables, subscriptionPackages };
 }
 
 // ── Load service list ─────────────────────────────────────────────────────────
@@ -864,7 +899,10 @@ function installServiceList(url, body, contentType) {
   isCustomListActive = false;
   services = parsed.services;
   rawLCNTables = parsed.lcnTables;
+  listPackages = parsed.subscriptionPackages;
+  listId = parsed.id || url;
   rebuildLCNs(); // assign LCNs and sort services using current regionFilter
+  renderPackageChoice();
   currentVersion = parsed.version;
   listNameEl.textContent = parsed.name;
   versionRow.textContent = parsed.version ? `Version ${parsed.version}` : '';
@@ -901,8 +939,11 @@ function applyFilters() {
     if (!svc) return;
     const matchSearch  = !q || svc.name.toLowerCase().includes(q) || (svc.provider || '').toLowerCase().includes(q);
     const matchGenre   = !activeGenre || svc.genre === activeGenre;
-    const matchRegion  = !regionFilter || !svc.targetRegion || svc.targetRegion.toUpperCase() === regionFilter.toUpperCase();
-    const show = matchSearch && matchGenre && matchRegion;
+    const matchRegion  = DVBIServiceList.inRegion(svc.targetRegions, regionFilter);
+    // @visible false: "the receiver is not expected to offer the service to the user in normal
+    // navigation modes" (table 23); direct entry of its number still reaches it.
+    const navigable    = !svc.numbering || svc.numbering.visible !== false;
+    const show = matchSearch && matchGenre && matchRegion && navigable;
     el.hidden = !show;
     if (show) visible++;
   });
@@ -952,14 +993,15 @@ function renderChannelList() {
     const hasAD  = svc.instances?.some(i => i.hasAudioDescription);
     const hasHoH = svc.instances?.some(i => i.hasHardOfHearing);
     const isMCOnly = svc.instances?.length > 0 && svc.instances.every(i => i.type === 'multicast');
-    const rating = svc.parentalRating;
-    // Only show the lock when a PIN gate is actually in force — the playback gate (selectService)
-    // requires pgPin, so without a PIN a threshold alone does not block playback.
-    const locked = pgThreshold && pgPin && rating && parseInt(rating, 10) >= pgThreshold && !pgUnlocked.has(svc.uid);
-    const regionTag = svc.targetRegion ? `<span class="ch-badge ch-badge-region" data-tooltip="Restricted to region: ${esc(svc.targetRegion)}">${esc(svc.targetRegion)}</span>` : '';
-    const subTag = svc.subscriptionPackage
-      ? `<span class="ch-badge ch-badge-sub" data-tooltip="Subscription required: ${esc(svc.subscriptionPackage)}">SUB</span>`
-      : (!svc.subscriptionPackage && svc.serviceRestriction && svc.serviceRestriction !== 'none'
+    const rating = serviceMinimumAge(svc);
+    // The lock shows where the service rating meets the threshold; with a PIN it can be unlocked.
+    const locked = DVBIServiceList.restricted(pgThreshold, rating, null) && !pgUnlocked.has(svc.uid);
+    const regions = (svc.targetRegions || []).join(', ');
+    const regionTag = regions ? `<span class="ch-badge ch-badge-region" data-tooltip="Restricted to region: ${esc(regions)}">${esc(regions)}</span>` : '';
+    const pkgs = (svc.subscriptionPackages || []).join(', ');
+    const subTag = pkgs
+      ? `<span class="ch-badge ch-badge-sub" data-tooltip="Instances in subscription packages: ${esc(pkgs)}">SUB</span>`
+      : (svc.serviceRestriction && svc.serviceRestriction !== 'none'
           ? `<span class="ch-badge ch-badge-sub" data-tooltip="${svc.serviceRestriction === 'subscription' ? 'Subscription required' : 'Conditional access required'}">${svc.serviceRestriction === 'subscription' ? 'SUB' : 'CA'}</span>` : '');
     const unavailableTag = serviceOffAir(svc) ? `<span class="ch-badge ch-badge-unavail" data-tooltip="Service currently off-air">Off-air</span>` : '';
     const broadcastTag = svc.noIpDelivery
@@ -981,7 +1023,7 @@ function renderChannelList() {
       hasHoH   ? '<span class="ch-badge ch-badge-hoh" data-tooltip="Hard of Hearing: subtitles with sound effects and speaker labels">HoH</span>' : '',
       isMCOnly ? '<span class="ch-badge ch-badge-mc"  data-tooltip="Multicast delivery only — not playable in a browser">MC</span>' : '',
       broadcastTag,
-      rating && rating !== 'none' ? `<span class="ch-badge ch-badge-pg" data-tooltip="Minimum parental age rating">${rating}+</span>` : '',
+      rating != null ? `<span class="ch-badge ch-badge-pg" data-tooltip="Minimum parental age rating">${rating}+</span>` : '',
       subTag,
       regionTag,
       unavailableTag,
@@ -1071,7 +1113,60 @@ function playbackCaps() {
     hls: (typeof Hls !== 'undefined' && Hls.isSupported()) || videoEl.canPlayType('application/vnd.apple.mpegurl') !== '',
     eme: typeof navigator.requestMediaKeySystemAccess === 'function',
     keySystem: DVBIPlayer.knownKeySystem,
+    packages: clientPackages(),
   };
+}
+
+// The user's country, ISO 3166 alpha-3 as the registry query and table 37f use it: the country last
+// entered for a Service List Registry lookup.
+function userCountry() { return (localStorage.getItem('dvbi-country') || '').toUpperCase() || null; }
+
+// Service.ParentalRating that applies in the user's country (clause 5.5.28, table 37f).
+function serviceMinimumAge(svc) { return DVBIServiceList.minimumAgeFor(svc.ratings, userCountry()); }
+
+// The minimum age the content guide gives the programme now on air, or null.
+function currentProgrammeAge(svc) {
+  const events = epgCache[svc.uid] || nowNextCache[svc.uid];
+  const current = events ? DVBIEpg.getNowNext(events).current : null;
+  return typeof current?.parentalAge === 'number' ? current.parentalAge : null;
+}
+
+// ── Subscription packages (clause 5.1.5) ───────────────────────────────────────────────────
+// "The method of selecting the applicable SubscriptionPackage may be user choice": the user picks
+// them in settings from the list's SubscriptionPackageList, remembered per service list @id.
+let listPackages = null; // { packages, allowNoPackage } of the current list, or null
+let listId = '';
+
+function clientPackages() {
+  try { return JSON.parse(localStorage.getItem(`dvbi-packages:${listId}`) || '[]'); } catch (_) { return []; }
+}
+
+function renderPackageChoice() {
+  const box = $('sub-packages');
+  const list = $('sub-packages-list');
+  const warn = $('sub-packages-warn');
+  if (!listPackages || !listPackages.packages.length) { box.hidden = true; return; }
+  const chosen = clientPackages();
+  list.innerHTML = listPackages.packages.map((p, i) =>
+    `<label class="settings-hint"><input type="checkbox" data-pkg="${i}"${chosen.includes(p) ? ' checked' : ''}/> ${esc(p)}</label>`).join('');
+  // "@allowNoPackage ... When set to true, it shall be possible to select none of the subscription
+  // packages in the list when installing the service list." When false, one is needed.
+  warn.hidden = listPackages.allowNoPackage || chosen.some(p => listPackages.packages.includes(p));
+  box.hidden = false;
+  list.querySelectorAll('input[data-pkg]').forEach(cb => cb.addEventListener('change', () => {
+    const picked = [...list.querySelectorAll('input[data-pkg]:checked')].map(c => listPackages.packages[+c.dataset.pkg]);
+    localStorage.setItem(`dvbi-packages:${listId}`, JSON.stringify(picked));
+    warn.hidden = listPackages.allowNoPackage || picked.length > 0;
+    const activeUid = currentIdx >= 0 ? services[currentIdx]?.uid : null;
+    if (!isCustomListActive) rebuildLCNs();
+    if (activeUid) currentIdx = services.findIndex(s => s.uid === activeUid);
+    renderChannelList();
+    document.querySelectorAll('.ch-card').forEach(el => el.classList.toggle('active', parseInt(el.dataset.idx, 10) === currentIdx));
+  }));
+  if (!warn.hidden) {
+    settingsPanel.classList.add('open');
+    settingsBtn.classList.add('active');
+  }
 }
 
 // Off air: every instance is outside its scheduled service hours (clause 5.2.5.3).
@@ -1127,6 +1222,8 @@ function selectService(idx) {
   failedInstances = new Set();
   offAirShown = false;
   clearTimeout(availabilityTimer);
+  hideAppFrame();
+  contentFinishedEl.hidden = true;
 
   // Availability check first — no point prompting PIN for an off-air service
   if (serviceOffAir(svc)) {
@@ -1152,6 +1249,16 @@ function selectService(idx) {
     playErrorMsg.textContent = `Service off-air${back ? ` (back on air ${new Date(back).toLocaleString()})` : ''}`;
     loadServiceEPG(idx);
     scheduleReevaluation(idx);
+    // "The application signalled for the service (refer to clause 5.2.3) can be started. This option
+    // should be used if the application type is supported by the DVB-I client." (clause 5.2.5.3) The
+    // application for when the service is not active is LinkedApplicationCS term 2 (clause 5.2.3.1).
+    const offAirApp = DVBIServiceList.effectiveApps(svc.serviceApps, []).find(a => a.term === '2');
+    if (offAirApp) {
+      const session = ++currentSession;
+      resolveLinkedApp(offAirApp).then(url => {
+        if (url && idx === currentIdx && session === currentSession && offAirShown) showAppFrame(url, null);
+      });
+    }
     return;
   }
 
@@ -1186,15 +1293,29 @@ function selectService(idx) {
     return;
   }
 
-  // Subscription gate — notify user before playing subscription/CA-only services (TS 103 770 §4.3)
-  if (!subGateAcked.has(svc.uid) && (svc.subscriptionPackage || svc.serviceRestriction === 'subscription' || svc.serviceRestriction === 'conditionalAccess')) {
+  // Subscription gate — notify user before playing subscription/CA-only services (TS 103 770 §4.3).
+  // Subscription packages are not gated here: they decide which instances can be selected.
+  if (!subGateAcked.has(svc.uid) && (svc.serviceRestriction === 'subscription' || svc.serviceRestriction === 'conditionalAccess')) {
     showSubGate(svc.uid, () => selectService(idx));
     return;
   }
 
-  // Parental PIN check
-  if (pgThreshold && pgPin && svc.parentalRating && parseInt(svc.parentalRating, 10) >= pgThreshold && !pgUnlocked.has(svc.uid)) {
-    openPinEntry(svc.uid, () => selectService(idx));
+  // "When selecting a service, the client shall enforce its current parental rating criteria using
+  // the Service.ParentalRating when it is defined for that service." with the content guide rating
+  // of the programme on air taking precedence (clause 5.5.28). A PIN, where one is set, unlocks.
+  const programmeAge = currentProgrammeAge(svc);
+  if (DVBIServiceList.restricted(pgThreshold, serviceMinimumAge(svc), programmeAge) && !pgUnlocked.has(svc.uid)) {
+    if (pgPin) { openPinEntry(svc.uid, () => selectService(idx), programmeAge ?? serviceMinimumAge(svc)); return; }
+    currentIdx = idx;
+    currentSession++;
+    document.querySelectorAll('.ch-card').forEach(el => el.classList.toggle('active', parseInt(el.dataset.idx, 10) === idx));
+    noService.style.display = 'none';
+    tbName.textContent = svc.name;
+    DVBIPlayer.stop();
+    bufSpinner.hidden = true;
+    playError.hidden = false;
+    playErrorMsg.textContent = `Blocked by parental control: rated ${programmeAge ?? serviceMinimumAge(svc)}+. Set a PIN in settings to unlock.`;
+    loadServiceEPG(idx);
     return;
   }
 
@@ -1251,6 +1372,26 @@ function tryInstance(svcIdx, session) {
   currentInstIdx = instIdx;
   tbName.textContent = delivery.label;
   overlayName.textContent = delivery.label;
+  updateLinkedAppButton(svc, delivery);
+  contentFinishedEl.hidden = true;
+  hideAppFrame();
+
+  // An application controlling media presentation (clause 5.2.3.2) presents the service; no media is
+  // played. One that cannot be started discards its instance, and so does its exit (clause 5.2.13).
+  if (delivery.type === 'application') {
+    DVBIPlayer.stop();
+    bufSpinner.hidden = true;
+    playError.hidden  = true;
+    overlayDlv.textContent = 'APP';
+    resolveLinkedApp(delivery.app).then(url => {
+      if (svcIdx !== currentIdx || session !== currentSession) return;
+      const discard = () => { failedInstances.add(instIdx); currentSession++; tryInstance(svcIdx, currentSession); };
+      if (!url) { console.warn('Linked application cannot be started, discarding its instance'); discard(); return; }
+      showAppFrame(url, () => { if (svcIdx === currentIdx && session === currentSession) discard(); });
+    });
+    return;
+  }
+
   updateDeliveryBadge(delivery, instIdx, svc.instances.length);
   bufSpinner.hidden = false;
   playError.hidden  = true;
@@ -1293,14 +1434,20 @@ function showOverlay(svc, delivery) {
   overlayProv.textContent = svc.provider;
   overlayType.textContent = TYPE_LABEL[svc.svcType] || svc.svcType;
   if (delivery) updateDeliveryBadge(delivery, 0, svc.instances.length);
-  updateLinkedAppButton(svc);
+  updateLinkedAppButton(svc, delivery);
   showOverlayBriefly(4500);
 }
 
-function updateLinkedAppButton(svc) {
-  const appUrl = svc?.linkedApp?.url || null;
-  tbAppBtn.hidden = !appUrl;
-  tbAppBtn.dataset.url = appUrl || '';
+// The toolbar offers the application with media in parallel (LinkedApplicationCS 1.1) of the playing
+// instance, which is the fallback instance's own after a fallback (clause 5.2.3.2), else the
+// service's home page application (term 3).
+let toolbarApp = null;
+function updateLinkedAppButton(svc, inst) {
+  toolbarApp = (inst?.apps || []).find(a => a.term === '1.1')
+    || (svc?.serviceApps || []).find(a => a.term === '3' && DVBIServiceList.effectiveApps([a], []).length)
+    || null;
+  tbAppBtn.hidden = !toolbarApp;
+  tbAppBtn.dataset.url = toolbarApp?.url || '';
 }
 
 function updateDeliveryBadge(delivery, instIdx, total) {
@@ -1548,7 +1695,7 @@ tbEpgBtn.addEventListener('click', () => epgPanelOpen ? closeEPGPanel() : openEP
 
 function renderEPGGrid() {
   DVBIEpg.renderGrid(
-    epgGridInner, services, bestEpgMap(),
+    epgGridInner, services.filter(s => !s.numbering || s.numbering.visible !== false), bestEpgMap(),
     uid => {
       const idx = services.findIndex(s => s.uid === uid);
       if (idx >= 0) { closeEPGGrid(); selectService(idx); }
@@ -1665,24 +1812,81 @@ function selectSubTrack(idx) {
 
 tbTracksBtn.addEventListener('click', () => tracksPanelOpen ? closeTracksPanel() : openTracksPanel());
 
+// Only http(s): a linked-app URL comes from external XML; never open javascript:/data: etc.
 // A184r2 §5.3 — pass CMCD session ID to linked app as URL query parameter
-function openLinkedApp(url) {
-  if (!url) return;
+function appLaunchUrl(url) {
   try {
     const u = new URL(url, location.href);
-    // Only http(s): a linked-app URL comes from external XML; never open javascript:/data: etc.
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
       console.warn('Refusing to open linked app with non-http(s) scheme:', u.protocol);
-      return;
+      return null;
     }
     u.searchParams.set('sid', CMCD_SESSION_ID);
-    window.open(u.toString(), '_blank', 'noopener,noreferrer');
+    return u.toString();
   } catch (_) {
-    // Unparseable URL — do not fall back to window.open(raw), which could be a javascript: URL
+    return null; // Unparseable URL — never fall back to the raw string, which could be a javascript: URL
   }
 }
 
-tbAppBtn.addEventListener('click', () => openLinkedApp(tbAppBtn.dataset.url));
+// The URL of the HTML application a linked application leads to: the page itself, or for an XML AIT
+// (application/vnd.dvb.ait+xml, table 7) the application chosen by clause 5.2.4.2, URLBase followed
+// by applicationLocation. Null when there is none this client can start.
+async function resolveLinkedApp(app) {
+  const type = String(app.contentType || '').toLowerCase();
+  if (type !== 'application/vnd.dvb.ait+xml') return appLaunchUrl(app.url);
+  // The XML AIT server is a DVB-I endpoint (clause 4.3.1); a 404 is not retried (clause 4.3.3.4).
+  const r = await dvbiHttp.get(app.url);
+  if (!r.ok) return null;
+  const doc = new DOMParser().parseFromString(r.body, 'application/xml');
+  if (doc.querySelector('parsererror')) return null;
+  const text = (el, name) => (el.getElementsByTagNameNS('*', name)[0]?.textContent || '').trim();
+  const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
+    type: text(a, 'OtherApp'),
+    priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    url: text(a, 'URLBase') + text(a, 'applicationLocation'),
+  }));
+  const chosen = DVBIServiceList.selectAitApplication(apps);
+  return chosen ? appLaunchUrl(chosen.url) : null;
+}
+
+// Opens an application in a new tab on the user's request. The tab is opened at once, while the
+// click still counts as a user action, and pointed at the application when it is resolved.
+function openLinkedApp(app) {
+  if (!app) return;
+  const w = window.open('', '_blank');
+  if (w) w.opener = null;
+  resolveLinkedApp(app).then(url => {
+    if (url && w) w.location.href = url;
+    else { if (w) w.close(); showVersionNotice('This application cannot be started'); }
+  });
+}
+
+// ── Linked application in the player (clauses 5.2.3.2, 5.2.5.3, 5.2.13) ───────────────────
+
+const appFrameWrap = $('app-frame-wrap');
+const appFrame     = $('app-frame');
+let appFrameOnExit = null;
+
+function showAppFrame(url, onExit) {
+  appFrame.src = url;
+  appFrameWrap.hidden = false;
+  appFrameOnExit = onExit;
+}
+
+function hideAppFrame() {
+  appFrameWrap.hidden = true;
+  appFrame.removeAttribute('src');
+  appFrameOnExit = null;
+}
+
+// Closing the frame is how the application exits here.
+$('app-frame-close').addEventListener('click', () => {
+  const onExit = appFrameOnExit;
+  hideAppFrame();
+  if (onExit) onExit();
+});
+
+tbAppBtn.addEventListener('click', () => openLinkedApp(toolbarApp));
 
 function autoSelectLang() {
   if (!langPref) return;
@@ -1818,6 +2022,7 @@ function showSLRPicker(entries) {
 $('slr-load-btn').addEventListener('click', async () => {
   const cc = $('slr-input').value.trim().toUpperCase();
   if (!cc) return;
+  localStorage.setItem('dvbi-country', cc);
   // Which registry to ask is a deployment choice, not something to hard-code: a manufacturer, a
   // regulator, an operator and a central registry are all named as possible operators in
   // TS 103 770 V1.2.1 clause 5.1.3.2. The default keeps the public registry this shipped with.
@@ -1869,12 +2074,12 @@ $('lang-pref').addEventListener('change', () => {
 
 $('region-filter').value = regionFilter;
 $('region-apply-btn').addEventListener('click', () => {
-  regionFilter = $('region-filter').value.trim().toUpperCase();
+  regionFilter = $('region-filter').value.trim(); // a Region@regionID, matched exactly
   localStorage.setItem('dvbi-region', regionFilter);
   // rebuildLCNs() re-sorts services in place, so remember the playing service and
   // recompute currentIdx by UID afterwards, else the UI desyncs from the active stream.
   const activeUid = currentIdx >= 0 ? services[currentIdx]?.uid : null;
-  if (!isCustomListActive) rebuildLCNs(); // reassign LCNs from region-matching LCNTable (A184r2 §4.8)
+  if (!isCustomListActive) rebuildLCNs(); // the LCN table of the region (clause 5.5.12)
   if (activeUid) currentIdx = services.findIndex(s => s.uid === activeUid);
   renderChannelList();
   applyFilters();
@@ -1907,8 +2112,13 @@ function handleLCNDigit(digit) {
   lcnOverlay.hidden = false;
   lcnTimer = setTimeout(() => {
     const lcn = parseInt(lcnBuffer, 10);
+    // A hidden service (@visible false) is reached by its number unless @selectable is false
+    // (table 23).
     const idx = services.findIndex((s, i) => {
       if (s.lcn !== lcn) return false;
+      if (s.numbering && s.numbering.visible === false) {
+        return DVBIServiceList.directlySelectable(s.numbering) && DVBIServiceList.inRegion(s.targetRegions, regionFilter);
+      }
       const card = channelList.querySelector(`.ch-card[data-idx="${i}"]`);
       return card && !card.hidden;
     });
@@ -1995,8 +2205,7 @@ document.addEventListener('keydown', e => {
       break;
     case 'a': case 'A': {
       e.preventDefault();
-      const url = tbAppBtn.dataset.url;
-      openLinkedApp(url);
+      openLinkedApp(toolbarApp);
       break;
     }
     case 't': case 'T':
@@ -2112,7 +2321,7 @@ function loadCustomList() {
 
 function showSubGate(uid, onContinue) {
   const svc = services.find(s => s.uid === uid);
-  const pkgName = svc?.subscriptionPackage || 'a subscription';
+  const pkgName = svc?.subscriptionPackages?.join(', ') || 'a subscription';
   $('sub-gate-msg').textContent = `This service may require ${pkgName}. It may not play without the appropriate subscription.`;
   $('sub-gate-continue').onclick = () => {
     subGateAcked.add(uid);
@@ -2132,11 +2341,11 @@ let _pinNew     = '';
 let _pinCallback = null;
 let _pinUid     = null;
 
-function openPinEntry(uid, onSuccess) {
+function openPinEntry(uid, onSuccess, age) {
   if (!pgPin) { onSuccess(); return; }
   _pinMode = 'entry'; _pinBuffer = ''; _pinCallback = onSuccess; _pinUid = uid;
   $('pin-title').textContent = 'Parental Control';
-  $('pin-subtitle').textContent = `This channel is rated ${services.find(s => s.uid === uid)?.parentalRating}+. Enter PIN.`;
+  $('pin-subtitle').textContent = `This channel is rated ${age}+. Enter PIN.`;
   $('pin-error').textContent = '';
   updatePinDots();
   pinModal.hidden = false;
@@ -2368,22 +2577,21 @@ function positionBadgeTip(badge) {
   if (pCh)  window._pendingCh = parseInt(pCh, 10) || null;
 })();
 
-// Fixed-time nightly service list update (A184r2 §4.11) — runs at 03:00 local time
-function scheduleNightlyUpdate() {
-  const now   = new Date();
-  const next  = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 3, 0, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
+// Daily service list update check (clause 5.1.7) at a time of day drawn at random, so that clients do
+// not all ask at the same moment; then every 24 hours. It goes through the HTTP client, so a list
+// still fresh by its max-age is not requested (clause 4.3.2.1).
+function scheduleNightlyUpdate(delay = DVBIServiceList.dailyUpdateDelay()) {
   setTimeout(() => {
-    if (currentListUrl) {
-      epgCache = {}; nowNextCache = {};
-      loadServiceList(currentListUrl).then(() => showVersionNotice('Scheduled service list refresh'));
+    if (currentListUrl && !isCustomListActive) {
+      loadServiceList(currentListUrl).then(outcome => { if (outcome === 'installed') showVersionNotice('Scheduled service list refresh'); });
     }
-    scheduleNightlyUpdate();
-  }, next - now);
+    scheduleNightlyUpdate(DVBIServiceList.DAY_MS);
+  }, delay);
 }
 scheduleNightlyUpdate();
 updateCustomListCount();
 
+$('slr-input').value = localStorage.getItem('dvbi-country') || '';
 {
   const saved = localStorage.getItem('dvbi-slr-endpoint');
   const el = $('slr-endpoint');
