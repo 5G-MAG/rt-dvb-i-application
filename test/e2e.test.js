@@ -240,7 +240,8 @@ const mhpVersion = (version = '1.8.1', profile = '0') => {
 
 // An XML AIT with an HbbTV application of higher priority, which this client cannot start, two
 // HTML5 ones of higher priority whose platform profile it cannot run (version 1.9.1 is not in
-// table 5; profile 0x0002 is PVR), and an HTML5 one it can (clause 5.2.4.2).
+// table 5; profile 0x0002 is PVR), and two HTML5 ones it can (clause 5.2.4.2), of priority 2 and
+// "0a", which is hexadecimal (mis_xmlait.xsd, ipi:Hexadecimal8bit), so ten and the one chosen.
 function fixtureAit(base, hbbtvOnly = false) {
   const a = (type, prio, loc, version, profile) => `<mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type>
     <mhp:priority>${prio}</mhp:priority>${mhpVersion(version, profile)}</mhp:applicationDescriptor>
@@ -249,7 +250,8 @@ function fixtureAit(base, hbbtvOnly = false) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <mhp:ServiceDiscovery xmlns:mhp="urn:dvb:mhp:2009"><mhp:ApplicationDiscovery DomainName="example"><mhp:ApplicationList>
 ${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' :
-  a('text/html', 4, 'too-new.html', '1.9.1') + a('text/html', 3, 'pvr.html', '1.8.1', '2') + a('text/html', 1, 'fromait.html')}
+  a('text/html', 4, 'too-new.html', '1.9.1') + a('text/html', 3, 'pvr.html', '1.8.1', '2') +
+  a('text/html', 2, 'two.html') + a('text/html', '0a', 'fromait.html')}
 </mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
 }
 
@@ -800,7 +802,7 @@ test('an XML AIT is processed to choose the application', { skip: !playwright },
   await card('AIT Service').click();
   await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
   assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/fromait\.html\?sid=/,
-    'the HTML5 application whose platform profile table 5 admits, not the HbbTV one nor those of higher priority it does not');
+    'the HTML5 application whose platform profile table 5 admits and whose hexadecimal priority is highest');
 });
 
 test('an instance whose controlling application cannot be started is discarded', { skip: !playwright }, async () => {

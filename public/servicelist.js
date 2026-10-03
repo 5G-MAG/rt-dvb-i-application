@@ -203,6 +203,14 @@ const DVBIServiceList = (() => {
     return AIT_SUPPORTED_PROFILES.includes(profile) && AIT_PLATFORM_VERSIONS.includes(v.join('.'));
   }
 
+  // The value of mhp:priority, which mis_xmlait.xsd types as hexadecimal: <xsd:element
+  // name="priority" type="ipi:Hexadecimal8bit"/>, with Hexadecimal8bit the pattern
+  // "[0-9a-fA-F]{1,2}" (sdns_v1.4r13.xsd). So "10" is sixteen and "0a" ten. A missing or
+  // malformed value counts as 0, as before.
+  function aitPriority(text) {
+    return hex(String(text ?? '').trim(), 2) ?? 0;
+  }
+
   // `apps` as parsed from an XML AIT: [{ type, priority, mhpVersion, url }]. Clause 5.2.4.2:
   // "select the application with the highest mhp:priority value that meets all of the following
   // criteria": an application type this client can start, and the platform profile above.
@@ -229,7 +237,7 @@ const DVBIServiceList = (() => {
 
   return {
     inRegion, packageAllows, selectLcnTable, assignChannelNumbers, directlySelectable,
-    minimumAgeFor, restricted, linkedAppTerm, effectiveApps, platformProfileOk, selectAitApplication, dailyUpdateDelay,
+    minimumAgeFor, restricted, linkedAppTerm, effectiveApps, platformProfileOk, aitPriority, selectAitApplication, dailyUpdateDelay,
     DAY_MS,
   };
 })();

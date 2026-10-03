@@ -197,6 +197,20 @@ test('clause 5.2.4.2: platform profile and version per TS 102 796 table 5, other
   assert.equal(L.selectAitApplication(apps.slice(0, 3)), null, 'none meets it');
 });
 
+// mis_xmlait.xsd: <xsd:element name="priority" type="ipi:Hexadecimal8bit"/>.
+test('clause 5.2.4.2: mhp:priority is read as hexadecimal', () => {
+  assert.equal(L.aitPriority('10'), 16);
+  assert.equal(L.aitPriority('0a'), 10);
+  assert.equal(L.aitPriority('FF'), 255);
+  assert.equal(L.aitPriority(' 9 '), 9, 'surrounding white space is not part of the value');
+  for (const bad of ['', null, 'g', '100', '-1', '1.5']) assert.equal(L.aitPriority(bad), 0, `"${bad}" counts as 0`);
+  const apps = [
+    { type: 'text/html', priority: L.aitPriority('9'), mhpVersion: BASIC, url: 'nine' },
+    { type: 'text/html', priority: L.aitPriority('0a'), mhpVersion: BASIC, url: 'ten' },
+  ];
+  assert.equal(L.selectAitApplication(apps).url, 'ten', '0x0a is above 9');
+});
+
 test('clause 5.1.7: the daily check falls anywhere in the 24 hours', () => {
   assert.equal(L.dailyUpdateDelay(() => 0), 0);
   assert.equal(L.dailyUpdateDelay(() => 0.5), 12 * 3600000);

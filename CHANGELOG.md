@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — mhp:priority is hexadecimal (TS 103 770 V1.2.1 clause 5.2.4.2, mis_xmlait.xsd)
+
+- **`mhp:priority` is read as the hexadecimal value the XML AIT schema types it as**
+  (`ipi:Hexadecimal8bit`), so "10" is sixteen and "0a" ten when the application with the highest
+  priority is chosen. It was read as decimal, which made "0a" zero.
+
 ## 2026-10 — XML AIT platform profile (TS 103 770 V1.2.1 clause 5.2.4.2, TS 102 796 V1.8.1 table 5)
 
 - **An XML AIT application is chosen only when its `mhp:mhpVersion` is one table 5 of ETSI TS 102

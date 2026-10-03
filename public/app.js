@@ -1753,7 +1753,7 @@ async function fetchAit(url, launchLocation) {
   const text = (el, name) => (el.getElementsByTagNameNS('*', name)[0]?.textContent || '').trim();
   const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
     type: text(a, 'OtherApp'),
-    priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    priority: DVBIServiceList.aitPriority(text(a, 'priority')),
     mhpVersion: aitMhpVersion(a),
     url: text(a, 'URLBase') + text(a, 'applicationLocation'),
   }));
@@ -2221,7 +2221,7 @@ async function resolveLinkedApp(app) {
   const text = (el, name) => (el.getElementsByTagNameNS('*', name)[0]?.textContent || '').trim();
   const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
     type: text(a, 'OtherApp'),
-    priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    priority: DVBIServiceList.aitPriority(text(a, 'priority')),
     mhpVersion: aitMhpVersion(a),
     url: text(a, 'URLBase') + text(a, 'applicationLocation'),
   }));
