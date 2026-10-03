@@ -1,5 +1,13 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — HTTP/1.1 caching rules (TS 102 796 V1.8.1 clause 7.3.2.6, IETF RFC 7234)
+
+- **A `no-store` response is not kept**, and removes what was held for that URL; a response whose
+  status is not cacheable by default is kept only with `max-age`, `Expires` or `public`.
+- **`max-age` counts from the age of the response**: the `Age` and `Date` headers, which the proxy
+  now passes back, are taken off it, so a response that aged in a cache on the way is not reused for
+  longer than intended. More than one `max-age` makes the response stale.
+
 ## 2026-10 — TLS profile of ETSI TS 102 796 V1.8.1 clause 11.2 (TS 103 770 V1.2.1 clause 7.3)
 
 - **The proxy connects to `https://` metadata endpoints with an explicit TLS profile** instead of

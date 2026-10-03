@@ -24,9 +24,10 @@ IETF RFC 1918 clause 3 block on the subnet of one of this host's interfaces (`pl
 `server.js`). Loopback is not an RFC 1918 block. The browser shows the same warning under the list
 name. Redirects are followed by the proxy itself, up to 20 as fetch does, so that each hop is
 checked. `If-Modified-Since` and `If-None-Match` are passed
-upstream and `Last-Modified`, `ETag`, `Cache-Control`, `Retry-After` and `Expires` are passed back
-(clause 4.3; `ETag` and `If-None-Match` for ETSI TS 102 796 clause 7.3.2.6, which clause 4.3.2.1
-refers to; `Expires` for Template XML AITs, clause 5.2.4.4.5).
+upstream and `Last-Modified`, `ETag`, `Cache-Control`, `Retry-After`, `Expires`, `Age` and `Date`
+are passed back (clause 4.3; `ETag` and `If-None-Match` for ETSI TS 102 796 clause 7.3.2.6, which
+clause 4.3.2.1 refers to; `Expires` for Template XML AITs, clause 5.2.4.4.5; `Age` and `Date` for the
+age of a response, IETF RFC 7234 clause 4.2.3).
 
 `https://` targets are fetched with a fixed TLS profile (`UPSTREAM_TLS` in `server.js`), the one
 TS 103 770 clause 7.3 takes from ETSI TS 102 796 V1.8.1 clause 11.2: TLS 1.2 or 1.3; for TLS 1.2 only

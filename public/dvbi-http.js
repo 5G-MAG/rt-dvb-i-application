@@ -12,6 +12,13 @@ https://www.5g-mag.com/license
 //
 //   4.3.2.1  Cache-Control: max-age is honoured per response: a repeated request is answered from the
 //            local cache while the response is fresh, and no update is requested before it expires.
+//   4.3.2.1  also has the client follow clause 7.3.2.6 of ETSI TS 102 796: "the caching rules defined
+//            in HTTP/1.1 [6]", where [6] is IETF RFC 7230, which places them in RFC 7234 ("HTTP
+//            requirements for cache behavior and cacheable responses are defined in Section 2 of
+//            [RFC7234]", RFC 7230 clause 2.4). Of them: a response is stored only as RFC 7234
+//            clause 3 allows (never under no-store), and max-age counts from the response's age
+//            (clause 4.2.3, with the Age and Date headers), so a response that aged in a cache on
+//            the way is not reused for longer than it was meant to be.
 //   4.3.2.2  If-Modified-Since carries the Last-Modified time held for that document, and is omitted
 //            when none is held; a 304 keeps the cached body.
 //   4.3.2.1  also has the client follow clause 7.3.2.6 of ETSI TS 102 796, which adds the
@@ -43,15 +50,55 @@ const DVBIHttp = (() => {
     return min + random() * (max - min);
   }
 
-  // max-age of a Cache-Control response header in milliseconds, or null when absent. RFC 9111
-  // clause 5.2.2.1 gives the argument as delta-seconds in token form; any other form is ignored.
+  // The directive names of a Cache-Control header, lower case, each with its argument or null.
+  function directives(cacheControl) {
+    return String(cacheControl || '').split(',').map(p => p.trim()).filter(Boolean).map(p => {
+      const eq = p.indexOf('=');
+      return eq < 0 ? [p.toLowerCase(), null] : [p.slice(0, eq).trim().toLowerCase(), p.slice(eq + 1).trim()];
+    });
+  }
+
+  // max-age of a Cache-Control response header in milliseconds, or null when absent or invalid.
+  // RFC 7234 clause 5.2.2.8 gives the argument as delta-seconds in token form ("'max-age=5' not
+  // 'max-age="5"'"); any other form is ignored. Clause 4.2.1: "When there is more than one value
+  // present for a given directive (e.g., two Expires header fields, multiple Cache-Control: max-age
+  // directives), the directive's value is considered invalid." Such a response is then stale, as
+  // the same clause encourages.
   function maxAgeMs(cacheControl) {
-    if (!cacheControl) return null;
-    for (const part of String(cacheControl).split(',')) {
-      const m = part.trim().match(/^max-age=(\d+)$/i);
-      if (m) return Number(m[1]) * 1000;
-    }
-    return null;
+    const values = directives(cacheControl).filter(([name]) => name === 'max-age');
+    if (values.length !== 1 || !/^\d+$/.test(values[0][1] || '')) return null;
+    return Number(values[0][1]) * 1000;
+  }
+
+  // RFC 7234 clause 5.2.2.3: "The "no-store" response directive indicates that a cache MUST NOT
+  // store any part of either the immediate request or response."
+  function noStore(cacheControl) {
+    return directives(cacheControl).some(([name]) => name === 'no-store');
+  }
+
+  // RFC 7234 clause 3: a response is stored only if it "contains an Expires header field", "contains
+  // a max-age response directive", "has a status code that is defined as cacheable by default", or
+  // "contains a public response directive". RFC 7231 clause 6.1: "200, 203, 204, 206, 300, 301, 404,
+  // 405, 410, 414, and 501" are cacheable by default; of them, only the 2xx ones are stored here.
+  const CACHEABLE_BY_DEFAULT = [200, 203, 204, 206];
+  function storable(status, cacheControl, expires) {
+    if (noStore(cacheControl)) return false;
+    return CACHEABLE_BY_DEFAULT.includes(status) || expires != null || maxAgeMs(cacheControl) != null ||
+      directives(cacheControl).some(([name]) => name === 'public');
+  }
+
+  // corrected_initial_age of RFC 7234 clause 4.2.3, in milliseconds:
+  //   apparent_age = max(0, response_time - date_value);
+  //   response_delay = response_time - request_time;
+  //   corrected_age_value = age_value + response_delay;
+  //   corrected_initial_age = max(apparent_age, corrected_age_value);
+  // age_value is the Age header "or 0, if not available"; a Date that cannot be parsed gives no
+  // apparent age.
+  function initialAgeMs({ age, date, requestTime, responseTime }) {
+    const ageValue = /^\d+$/.test(String(age ?? '').trim()) ? Number(String(age).trim()) * 1000 : 0;
+    const dateValue = date ? Date.parse(date) : NaN;
+    const apparentAge = Number.isFinite(dateValue) ? Math.max(0, responseTime - dateValue) : 0;
+    return Math.max(apparentAge, ageValue + (responseTime - requestTime));
   }
 
   // Retry-After in milliseconds from `nowMs`, or null. RFC 9110 clause 10.2.3:
@@ -110,6 +157,7 @@ const DVBIHttp = (() => {
       if (timeoutMs) init.signal = AbortSignal.timeout(timeoutMs);
 
       let res;
+      const requestTime = now();
       try {
         res = await fetch(resolve(url), init);
       } catch (e) {
@@ -118,11 +166,22 @@ const DVBIHttp = (() => {
         return { ok: false, status: 0, error: String(e && e.message || e), retryAt: backOff(key) };
       }
 
-      const maxAge = maxAgeMs(res.headers.get('Cache-Control'));
-      const expiresAt = maxAge != null ? now() + maxAge : 0;
+      // RFC 7234 clause 4.2: "response_is_fresh = (freshness_lifetime > current_age)", with
+      // max-age as the lifetime ("considered stale after its age is greater than the specified
+      // number of seconds", clause 5.2.2.8). maxAge below is what is left of it on arrival.
+      const responseTime = now();
+      const cacheControl = res.headers.get('Cache-Control');
+      const lifetime = maxAgeMs(cacheControl);
+      const maxAge = lifetime == null ? null : Math.max(0, lifetime - initialAgeMs({
+        age: res.headers.get('Age'), date: res.headers.get('Date'), requestTime, responseTime }));
+      const expiresAt = maxAge != null ? responseTime + maxAge : 0;
 
       const expires = res.headers.get('Expires') || null;
       if (res.status === 304 && cached) {
+        // The validated response answers this request; under no-store it is not kept for the next
+        // one ("MUST make a best-effort attempt to remove the information from volatile storage as
+        // promptly as possible after forwarding it", RFC 7234 clause 5.2.2.3).
+        if (noStore(cacheControl)) cache.delete(url);
         cached.expiresAt = expiresAt;
         cached.expires = expires;
         const lm = res.headers.get('Last-Modified');
@@ -136,8 +195,12 @@ const DVBIHttp = (() => {
       if (res.ok) {
         const body = await res.text();
         const contentType = res.headers.get('Content-Type') || '';
-        cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null,
-          etag: res.headers.get('ETag') || null, expiresAt, expires });
+        if (storable(res.status, cacheControl, expires)) {
+          cache.set(url, { body, contentType, lastModified: res.headers.get('Last-Modified') || null,
+            etag: res.headers.get('ETag') || null, expiresAt, expires });
+        } else {
+          cache.delete(url);
+        }
         state.delete(key);
         // maxAgeMs and expires are passed on for callers with their own expiry rule (clause 5.2.4.4.5).
         return { ok: true, status: res.status, body, contentType, maxAgeMs: maxAge, expires };
@@ -184,7 +247,7 @@ const DVBIHttp = (() => {
     return { get, backOff, freshFor, nextAllowed };
   }
 
-  return { backoffRange, backoffDelay, maxAgeMs, retryAfterMs, createClient };
+  return { backoffRange, backoffDelay, maxAgeMs, noStore, storable, initialAgeMs, retryAfterMs, createClient };
 })();
 
 // Exposed for Node-based unit tests (test/dvbi-http.test.js). `module` is undefined when loaded via

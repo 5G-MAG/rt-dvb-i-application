@@ -184,3 +184,76 @@ test('clause 4.3.3.7: back-off applied on request by the caller, counted per req
   for (let i = 0; i < 20; i++) c.backOff('cg|svc');
   assert.equal(c.nextAllowed('cg|svc'), t.now() + 26214400, 'held at CurrentRetry 10');
 });
+
+// ── ETSI TS 102 796 V1.8.1 clause 7.3.2.6: "the caching rules defined in HTTP/1.1 [6]" ─────────
+// [6] is IETF RFC 7230, which leaves caching to RFC 7234 (RFC 7230 clause 2.4).
+
+test('RFC 7234 clause 4.2.1: more than one max-age is invalid, so the response is stale', () => {
+  assert.equal(DVBIHttp.maxAgeMs('max-age=5, max-age=10'), null);
+  assert.equal(DVBIHttp.maxAgeMs('max-age=5, no-cache'), 5000);
+});
+
+test('RFC 7234 clause 5.2.2.3: a no-store response is not stored, and removes what was', async () => {
+  const LM = 'Wed, 19 Jun 2019 19:43:31 GMT';
+  const f = fakeFetch([
+    { status: 200, headers: { 'Last-Modified': LM, ETag: '"a"' }, body: 'v1' },
+    { status: 200, headers: { 'Last-Modified': LM, ETag: '"b"', 'Cache-Control': 'no-store' }, body: 'v2' },
+    { status: 200, headers: { 'Last-Modified': LM, ETag: '"c"' }, body: 'v3' },
+    { status: 304, headers: { 'Cache-Control': 'no-store, max-age=60' } },
+    { status: 200, body: 'v4' },
+  ]);
+  const c = DVBIHttp.createClient({ fetch: f });
+  await c.get('https://sl.example/list.xml');
+  assert.equal((await c.get('https://sl.example/list.xml')).body, 'v2');
+  assert.equal(f.calls[1].headers['If-None-Match'], '"a"', 'the stored response is validated');
+  await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[2].headers['If-None-Match'], undefined, 'the no-store response was not stored, and v1 was removed');
+  const validated = await c.get('https://sl.example/list.xml');
+  assert.equal(validated.body, 'v3', 'a 304 under no-store still answers the request it validates');
+  assert.equal(c.freshFor('https://sl.example/list.xml'), 0);
+  await c.get('https://sl.example/list.xml');
+  assert.equal(f.calls[4].headers['If-None-Match'], undefined, '... and the response is then removed');
+  assert.equal(f.calls.length, 5, 'max-age on a no-store response does not let it be reused');
+});
+
+test('RFC 7234 clause 3: a status not cacheable by default is stored only with explicit freshness', async () => {
+  const f = fakeFetch([
+    { status: 201, headers: { ETag: '"a"' }, body: 'created' },
+    { status: 201, headers: { ETag: '"b"', 'Cache-Control': 'max-age=60' }, body: 'fresh' },
+  ]);
+  const t = clock();
+  const c = DVBIHttp.createClient({ fetch: f, now: t.now });
+  await c.get('https://sl.example/x');
+  await c.get('https://sl.example/x');
+  assert.equal(f.calls[1].headers['If-None-Match'], undefined, 'the 201 without max-age, Expires or public was not stored');
+  assert.equal((await c.get('https://sl.example/x')).fromCache, true, 'the 201 with max-age was');
+  assert.equal(DVBIHttp.storable(200, null, null), true);
+  assert.equal(DVBIHttp.storable(202, 'public', null), true);
+  assert.equal(DVBIHttp.storable(202, null, 'Thu, 01 Dec 1994 16:00:00 GMT'), true);
+  assert.equal(DVBIHttp.storable(200, 'no-store', null), false);
+});
+
+test('RFC 7234 clause 4.2.3: max-age counts from the age of the response (Age, Date)', async () => {
+  const t = clock(Date.parse('Sat, 03 Oct 2026 12:00:00 GMT'));
+  const f = fakeFetch([
+    { status: 200, headers: { 'Cache-Control': 'max-age=60', Age: '50' }, body: 'aged' },
+    { status: 200, headers: { 'Cache-Control': 'max-age=60', Date: 'Sat, 03 Oct 2026 11:59:40 GMT' }, body: 'dated' },
+    { status: 200, headers: { 'Cache-Control': 'max-age=60', Age: '90' }, body: 'stale' },
+    { status: 200, body: 'next' },
+  ]);
+  const c = DVBIHttp.createClient({ fetch: f, now: t.now });
+  const first = await c.get('https://cg.example/a');
+  assert.equal(first.maxAgeMs, 10000, 'Age 50 of max-age 60 leaves 10 s');
+  assert.equal(c.freshFor('https://cg.example/a'), 10000);
+  t.advance(9000);
+  assert.equal((await c.get('https://cg.example/a')).fromCache, true);
+  t.advance(1000);
+  assert.equal((await c.get('https://cg.example/a')).body, 'dated', 'requested again once its age reaches 60 s');
+  assert.equal(c.freshFor('https://cg.example/a'), 30000, 'Date 30 s before arrival leaves 30 s');
+  t.advance(30000);
+  await c.get('https://cg.example/a');
+  assert.equal(c.freshFor('https://cg.example/a'), 0, 'an Age above max-age arrives stale');
+  assert.equal((await c.get('https://cg.example/a')).body, 'next');
+  assert.equal(DVBIHttp.initialAgeMs({ age: 'x', date: 'not a date', requestTime: 0, responseTime: 200 }), 200,
+    'neither header usable: the response delay alone');
+});

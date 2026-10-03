@@ -253,7 +253,8 @@ test('the proxy forwards conditional request headers and caching and retry heade
       seenInm = req.headers['if-none-match'] || null;
       if (seenIms === LM) { res.writeHead(304, { 'Cache-Control': 'max-age=60' }); res.end(); return; }
       if (seenInm === ETAG) { res.writeHead(304, { ETag: ETAG }); res.end(); return; }
-      res.writeHead(200, { 'Content-Type': 'application/xml', 'Last-Modified': LM, 'Cache-Control': 'max-age=3600', ETag: ETAG });
+      res.writeHead(200, { 'Content-Type': 'application/xml', 'Last-Modified': LM, 'Cache-Control': 'max-age=3600', ETag: ETAG,
+        Age: '7', Date: 'Sat, 03 Oct 2026 12:00:00 GMT' });
       res.end('<?xml version="1.0"?><ServiceList/>');
     } else if (req.url === '/auth') {
       res.writeHead(401, { 'Retry-After': '120' });
@@ -279,6 +280,8 @@ test('the proxy forwards conditional request headers and caching and retry heade
     assert.equal(first.headers.get('last-modified'), LM);
     assert.equal(first.headers.get('cache-control'), 'max-age=3600');
     assert.equal(first.headers.get('etag'), ETAG, 'ETag comes back (TS 102 796 clause 7.3.2.6)');
+    assert.equal(first.headers.get('age'), '7', 'Age comes back (RFC 7234 clause 4.2.3)');
+    assert.equal(first.headers.get('date'), 'Sat, 03 Oct 2026 12:00:00 GMT', 'the origin\'s Date, not the proxy\'s');
     assert.equal(seenInm, null, 'no If-None-Match when the browser sent none');
 
     const byTag = await via('/list.xml', { 'If-None-Match': ETAG });
