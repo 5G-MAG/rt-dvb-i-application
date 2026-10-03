@@ -35,6 +35,26 @@ test('MBMS URL: what clause 8.2.2 does not allow is reported', () => {
   ]) assert.ok(DVBIMbmsUrl.problem(u), u);
 });
 
+// RFC 3986 clause 3.2.2: IP-literal = "[" ( IPv6address / IPvFuture ) "]".
+test('MBMS URL: a bracketed host must be an RFC 3986 IPv6address or IPvFuture', () => {
+  for (const u of [
+    'mbms://[::1]/userservice/1',
+    'mbms://[2001:db8::7]',
+    'mbms://[v1.fe]',
+    'mbms://[1:2:3:4:5:6:7:8]',
+    'mbms://[::ffff:192.0.2.1]/a',
+  ]) assert.equal(DVBIMbmsUrl.problem(u), null, u);
+  for (const u of [
+    'mbms://[1]/x',
+    'mbms://[:]',
+    'mbms://[::g]',
+    'mbms://[1::2::3]',
+    'mbms://[1:2:3:4:5:6:7:8:9]',
+    'mbms://[::256.1.1.1]',
+    'mbms://[v1.]',
+  ]) assert.ok(DVBIMbmsUrl.problem(u), u);
+});
+
 test('MBMS URL: the serviceId is the part before the first &', () => {
   assert.equal(DVBIMbmsUrl.serviceId('mbms://service1000.mbms.operator.com&label=http://www.example.com/v.mp4'),
     'mbms://service1000.mbms.operator.com');

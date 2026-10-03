@@ -29,7 +29,26 @@ const DVBIMbmsUrl = (() => {
     const userinfo = `(?:[${U}${SUB}:]|${PCT})*`;
     const regName = `(?:[${U}${SUB}]|${PCT})+`;
     const ipv4 = "(?:\\d{1,3}\\.){3}\\d{1,3}";
-    const ipLiteral = "\\[[0-9A-Fa-f:.]+\\]";     // IPv6address; IPvFuture is not accepted
+    // IP-literal = "[" ( IPv6address / IPvFuture ) "]" (RFC 3986 clause 3.2.2), IPv6address with
+    // its nine forms, ls32 and h16, and dec-octet for the IPv4address inside ls32.
+    const decOctet = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]\\d|\\d)";
+    const h16 = "[0-9A-Fa-f]{1,4}";
+    const ls32 = `(?:${h16}:${h16}|${decOctet}(?:\\.${decOctet}){3})`;
+    const h16c = n => `(?:${h16}:){${n}}`;                         // n( h16 ":" )
+    const before = n => `(?:(?:${h16}:){0,${n}}${h16})?`;          // [ *n( h16 ":" ) h16 ]
+    const ipv6 = `(?:${[
+      `${h16c(6)}${ls32}`,
+      `::${h16c(5)}${ls32}`,
+      `(?:${h16})?::${h16c(4)}${ls32}`,
+      `${before(1)}::${h16c(3)}${ls32}`,
+      `${before(2)}::${h16c(2)}${ls32}`,
+      `${before(3)}::${h16}:${ls32}`,
+      `${before(4)}::${ls32}`,
+      `${before(5)}::${h16}`,
+      `${before(6)}::`,
+    ].join('|')})`;
+    const ipvFuture = `[vV][0-9A-Fa-f]+\\.[${U}${SUB}:]+`;
+    const ipLiteral = `\\[(?:${ipv6}|${ipvFuture})\\]`;
     const host = `(?:${ipLiteral}|${ipv4}|${regName})`;
     const authority = `(?:${userinfo}@)?${host}(?::\\d*)?`;
     const pathAbempty = `(?:/(?:[${U}${SUB}:@]|${PCT})*)*`;
