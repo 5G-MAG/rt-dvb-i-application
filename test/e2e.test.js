@@ -29,7 +29,7 @@ const http = require('http');
 const { makeCertificate } = require('./tls-fixture.js');
 
 let browser, page, server, baseUrl, plainServer;
-const hits = { cg404List: 0, cg404Guide: 0, playlist: 0, registryQuery: '', guideGoneList: 0 };
+const hits = { cg404List: 0, cg404Guide: 0, playlist: 0, registryQuery: '', guideGoneList: 0, aitQuery: '' };
 const cgRequests = [];
 let playwright;
 try { playwright = require('playwright'); }
@@ -223,6 +223,7 @@ function fixtureHandlingXml(base) {
   service('apptypeonly', 'App Type Only', `<ServiceInstance>${app('1.2', `${base}/app/controlling.apk`, 'application/vnd.android.package-archive')}${dash('apptypeonlyignored')}</ServiceInstance>`)}${
   service('aittb', 'AIT Toolbar', `<ServiceInstance>${app('1.1', `${base}/app/ait-slow.xml`, 'application/vnd.dvb.ait+xml')}${dash('aittb')}</ServiceInstance>`)}${
   service('aittbnone', 'AIT Toolbar None', `<ServiceInstance>${app('1.1', `${base}/app/ait-hbbtv.xml`, 'application/vnd.dvb.ait+xml')}${dash('aittbnone')}</ServiceInstance>`)}${
+  service('home', 'Home App', `<ServiceInstance>${dash('home')}</ServiceInstance>`, app('3', `${base}/app/home.html#start`))}${
   service('vod', 'VoD', `<ServiceInstance>${dash('vod')}<RelatedMaterial><tva:HowRelated href="urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2"/><tva:MediaLocator><tva:MediaUri contentType="image/png">${base}/img/finished.png</tva:MediaUri></tva:MediaLocator></RelatedMaterial></ServiceInstance>`)}
 </ServiceList>`.replace(/<ServiceInstance([^>]*)>([\s\S]*?)<\/ServiceInstance>/g, (m, attrs, inner) => {
     // Schema order inside ServiceInstance: RelatedMaterial before delivery parameters.
@@ -443,7 +444,7 @@ before(async () => {
   app.get('/service-list-select.xml', (req, res) => res.type('application/xml').send(fixtureSelectXml(baseUrl)));
   app.get('/service-list-handling.xml', (req, res) => res.type('application/xml').send(fixtureHandlingXml(baseUrl)));
   app.get('/app/:page.html', (req, res) => res.type('text/html').send(`<!doctype html><title>${req.params.page}</title><p>${req.params.page}</p>`));
-  app.get('/app/ait.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)));
+  app.get('/app/ait.xml', (req, res) => { hits.aitQuery = req.originalUrl; res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)); });
   app.get('/app/ait-slow.xml', (req, res) => setTimeout(() => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl)), 1000));
   app.get('/app/ait-hbbtv.xml', (req, res) => res.type('application/vnd.dvb.ait+xml').send(fixtureAit(baseUrl, true)));
   // Content guide server written from clause 6 (see fixtureGuide below).
@@ -787,7 +788,8 @@ test('an application controlling media presentation presents the service; its ex
   await page.evaluate(() => { window.__plays = []; });
   await card('App Service').click();
   await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
-  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/controlling\.html\?sid=/);
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/controlling\.html\?lloc=service&sid=/,
+    'term 1.2 is launched with the launch location "service" (clause 5.2.3.1)');
   assert.deepEqual(await plays(), [], 'no media stream is presented, delivery parameters ignored');
 
   await page.click('#app-frame-close');
@@ -803,6 +805,7 @@ test('an XML AIT is processed to choose the application', { skip: !playwright },
   await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
   assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/fromait\.html\?sid=/,
     'the HTML5 application whose platform profile table 5 admits and whose hexadecimal priority is highest');
+  assert.equal(hits.aitQuery, '/app/ait.xml?lloc=service', 'the XML AIT URL of a term 1.2 application carries its launch location');
 });
 
 test('an instance whose controlling application cannot be started is discarded', { skip: !playwright }, async () => {
@@ -857,10 +860,21 @@ test('a toolbar application is offered once its XML AIT is read, shown unavailab
   assert.doesNotMatch(notice, /cannot be started/, 'no error is issued to the user');
 });
 
+// Clause 5.2.3.1, term 3, launched from the player toolbar, which is none of the views ETSI TS 102
+// 796 table 2a names: "other", added before the "#" (TS 102 796 clause 6.2.2.6.2).
+test('a term 3 application from the toolbar carries lloc=other, before the fragment', { skip: !playwright }, async () => {
+  await card('Home App').click();
+  await page.waitForSelector('#tb-app-btn:not([hidden])', { timeout: 5000 });
+  const [popup] = await Promise.all([page.context().waitForEvent('page'), page.click('#tb-app-btn')]);
+  await popup.waitForURL(/\/app\/home\.html\?lloc=other&sid=[^#]+#start$/, { timeout: 5000 });
+  await popup.close();
+});
+
 test('outside scheduled hours the application for an inactive service is started', { skip: !playwright }, async () => {
   await card('Off Air App').click();
   await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
-  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/offair\.html\?sid=/);
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/offair\.html\?lloc=availability&sid=/,
+    'term 2 is launched with the launch location "availability" (clause 5.2.3.1)');
 });
 
 test('subscription packages decide which instances can be selected', { skip: !playwright }, async () => {

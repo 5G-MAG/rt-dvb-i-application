@@ -211,6 +211,14 @@ test('clause 5.2.4.2: mhp:priority is read as hexadecimal', () => {
   assert.equal(L.selectAitApplication(apps).url, 'ten', '0x0a is above 9');
 });
 
+test('clause 5.2.3.1: launch location by LinkedApplicationCS term', () => {
+  assert.equal(L.launchLocation('1.2'), 'service');
+  assert.equal(L.launchLocation('2'), 'availability');
+  assert.equal(L.launchLocation('1.1', 'other'), null, 'term 1.1: the launch location is not used');
+  assert.equal(L.launchLocation('3', 'epg'), 'epg', 'term 3: where it is launched from');
+  assert.equal(L.launchLocation('3', 'other'), 'other');
+});
+
 test('clause 5.1.7: the daily check falls anywhere in the 24 hours', () => {
   assert.equal(L.dailyUpdateDelay(() => 0), 0);
   assert.equal(L.dailyUpdateDelay(() => 0.5), 12 * 3600000);

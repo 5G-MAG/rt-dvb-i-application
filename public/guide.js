@@ -46,9 +46,17 @@ const DVBIGuide = (() => {
       .map(([k, v]) => `${encodeQueryComponent(k)}=${encodeQueryComponent(v)}`).join('&');
   }
 
+  // The pairs are added to the query, which RFC 3986 clause 3 places before any fragment
+  // (URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ]): ETSI TS 102 796 V1.8.1 clause
+  // 6.2.2.6.2 "This string is added before the first number sign (#) character in the URL if there
+  // is one, or at the end if there is not, using either a "?" or a "&" character".
   function withQuery(base, pairs) {
     const q = query(pairs);
-    return q ? `${base}${base.includes('?') ? '&' : '?'}${q}` : base;
+    if (!q) return base;
+    const hash = base.indexOf('#');
+    const head = hash < 0 ? base : base.slice(0, hash);
+    const fragment = hash < 0 ? '' : base.slice(hash);
+    return `${head}${head.includes('?') ? '&' : '?'}${q}${fragment}`;
   }
 
   // The 12-hour windows, each starting on a 3-hour boundary, that together cover [fromMs, toMs]
@@ -108,6 +116,14 @@ const DVBIGuide = (() => {
     return withQuery(url, [...regionPairs(regions), ['lloc', launchLocation]]);
   }
 
+  // A linked application's URL, an HTML page or an XML AIT, with its launch context (clause
+  // 5.2.3.1, which refers to ETSI TS 102 796 clause 6.2.2.6.2): "the application URL (which may
+  // refer to either an HTML page or an XML AIT) is modified to add a launch context query parameter
+  // of the form "lloc=<launch location>"". No location leaves the URL as it is.
+  function linkedAppUrl(url, launchLocation) {
+    return withQuery(url, [['lloc', launchLocation]]);
+  }
+
   // On-demand availability window (table 52, StartOfAvailability and EndOfAvailability).
   function onDemandAvailable(od, ms) {
     if (!od) return false;
@@ -138,7 +154,7 @@ const DVBIGuide = (() => {
 
   return {
     resolveSource, serviceId, scheduleWindows, scheduleUrl, nowNextUrl, programUrl, moreEpisodesUrl,
-    boxSetCategoriesUrl, boxSetListsUrl, boxSetContentsUrl, aitUrl, onDemandAvailable,
+    boxSetCategoriesUrl, boxSetListsUrl, boxSetContentsUrl, aitUrl, linkedAppUrl, onDemandAvailable,
     templateAitExpiry, orderResults, encodeQueryComponent,
   };
 })();

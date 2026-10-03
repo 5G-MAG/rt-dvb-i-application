@@ -64,6 +64,19 @@ test('clause 5.2.4.4.6: contextual parameters on an XML AIT URL, with ? or &', (
   assert.equal(G.aitUrl('https://channel7.co.uk/ait.aitx', [], 'epg'), 'https://channel7.co.uk/ait.aitx?lloc=epg');
 });
 
+// TS 102 796 V1.8.1 clause 6.2.2.6.2: lloc "is added before the first number sign (#) character in
+// the URL if there is one, or at the end if there is not, using either a "?" or a "&" character".
+test('clause 5.2.3.1: the launch location goes into the query, before any fragment', () => {
+  assert.equal(G.linkedAppUrl('http://www.example.com/hbbtv-application#mode4', 'playerpage'),
+    'http://www.example.com/hbbtv-application?lloc=playerpage#mode4', 'TS 102 796 clause 6.2.2.6.2, example 4');
+  assert.equal(G.linkedAppUrl('http://www.example.com/deeplink?cid=is38g7bv', 'epg'),
+    'http://www.example.com/deeplink?cid=is38g7bv&lloc=epg', 'example 3');
+  assert.equal(G.linkedAppUrl('https://a.example/app?x=1#f?g', 'service'), 'https://a.example/app?x=1&lloc=service#f?g',
+    'a "?" in the fragment is not the query');
+  assert.equal(G.linkedAppUrl('https://a.example/app', null), 'https://a.example/app', 'no location, no parameter');
+  assert.equal(G.aitUrl('https://a.example/ait.xml#x', [], 'epg'), 'https://a.example/ait.xml?lloc=epg#x');
+});
+
 test('table 52: on-demand availability window', () => {
   const od = { start: '2014-03-18T22:00:00Z', end: '2014-04-17T21:00:00Z' };
   assert.equal(G.onDemandAvailable(od, Date.parse('2014-03-20T00:00:00Z')), true);

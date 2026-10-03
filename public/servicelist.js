@@ -148,6 +148,21 @@ const DVBIServiceList = (() => {
     return h.startsWith(LINKED_APP_CS) ? h.slice(LINKED_APP_CS.length) : null;
   }
 
+  // The launch location of a linked application by its LinkedApplicationCS term (clause 5.2.3.1):
+  // "For linked applications where HowRelated@href is set to
+  // urn:dvb:metadata:cs:LinkedApplicationCS:2019:1.2, the launch location "service" should be used.",
+  // for term 2 "the launch location "availability" should be used.", and term 1.1 applications are
+  // those "where the launch location is not used." For term 3 it depends on where it is launched
+  // from, `term3Location`: "epg" from a content guide, "channellist" from a list of services without
+  // guide data, "otherwise the most appropriate value of the "Defined launch location terms"" of
+  // ETSI TS 102 796 table 2a. Returns the value, or null for none.
+  function launchLocation(term, term3Location) {
+    if (term === '1.2') return 'service';
+    if (term === '2') return 'availability';
+    if (term === '3') return term3Location || null;
+    return null;
+  }
+
   // The applications that apply to a service instance, clause 5.2.3.4: an instance-level 1.1 or 1.2
   // overrides service-level 1.1 and 1.2 with the same MediaUri@contentType, an instance-level 2
   // overrides a service-level 2 with the same type; 3 is used only at service level.
@@ -237,7 +252,7 @@ const DVBIServiceList = (() => {
 
   return {
     inRegion, packageAllows, selectLcnTable, assignChannelNumbers, directlySelectable,
-    minimumAgeFor, restricted, linkedAppTerm, effectiveApps, platformProfileOk, aitPriority, selectAitApplication, dailyUpdateDelay,
+    minimumAgeFor, restricted, linkedAppTerm, launchLocation, effectiveApps, platformProfileOk, aitPriority, selectAitApplication, dailyUpdateDelay,
     DAY_MS,
   };
 })();

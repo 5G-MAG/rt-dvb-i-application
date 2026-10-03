@@ -1,5 +1,15 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Launch location of linked applications (TS 103 770 V1.2.1 clause 5.2.3.1, TS 102 796 V1.8.1 clause 6.2.2.6.2)
+
+- **A linked application is launched with `lloc`**: "service" for an application controlling media
+  presentation (term 1.2), "availability" for the application of an inactive service (term 2), and
+  "other" for the service's home page application (term 3) opened from the player toolbar. An
+  application with media in parallel (term 1.1) gets none. The parameter goes on the HTML page URL,
+  or on the XML AIT URL when the application is signalled by one.
+- **Query parameters are added before any `#` fragment**, for every URL this client builds a query
+  on (content guide requests and XML AIT contextual parameters included), not after it.
+
 ## 2026-10 — mhp:priority is hexadecimal (TS 103 770 V1.2.1 clause 5.2.4.2, mis_xmlait.xsd)
 
 - **`mhp:priority` is read as the hexadecimal value the XML AIT schema types it as**

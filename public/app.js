@@ -1576,7 +1576,12 @@ function updateLinkedAppButton(svc, inst) {
   tbAppBtn.title = 'Launch linked application (A)';
   tbAppBtn.dataset.url = '';
   if (!app) return;
-  resolveLinkedApp(app).then(url => {
+  // Term 3 from this toolbar: it is neither a content guide nor a list of services, nor any other
+  // view ETSI TS 102 796 table 2a names, so its catch-all applies: "Any view that does not fall
+  // within the categories defined above and for which no platform-specific or local term is
+  // defined." The "miniguide" row is "within the terminal's electronic programme guide", which this
+  // toolbar is not.
+  resolveLinkedApp(app, 'other').then(url => {
     if (seq !== toolbarAppSeq) return;
     tbAppBtn.hidden = false;
     tbAppBtn.dataset.url = app.url;
@@ -2209,12 +2214,15 @@ function appLaunchUrl(url) {
 
 // The URL of the HTML application a linked application leads to: the page itself, or for an XML AIT
 // (application/vnd.dvb.ait+xml, table 7) the application chosen by clause 5.2.4.2, URLBase followed
-// by applicationLocation. Null when there is none this client can start.
-async function resolveLinkedApp(app) {
+// by applicationLocation. Null when there is none this client can start. The page or XML AIT URL
+// carries the launch location of clause 5.2.3.1 (DVBIServiceList.launchLocation); `term3Location`
+// is where a term 3 application is launched from.
+async function resolveLinkedApp(app, term3Location) {
   const type = String(app.contentType || '').toLowerCase();
-  if (type !== 'application/vnd.dvb.ait+xml') return appLaunchUrl(app.url);
+  const url = DVBIGuide.linkedAppUrl(app.url, DVBIServiceList.launchLocation(app.term, term3Location));
+  if (type !== 'application/vnd.dvb.ait+xml') return appLaunchUrl(url);
   // The XML AIT server is a DVB-I endpoint (clause 4.3.1); a 404 is not retried (clause 4.3.3.4).
-  const r = await dvbiHttp.get(app.url);
+  const r = await dvbiHttp.get(url);
   if (!r.ok) return null;
   const doc = new DOMParser().parseFromString(r.body, 'application/xml');
   if (doc.querySelector('parsererror')) return null;
