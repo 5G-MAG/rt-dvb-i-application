@@ -152,15 +152,49 @@ test('clause 5.2.13: a controlling application of a type the client cannot start
   assert.equal(L.effectiveApps([], [{ term: '1.2', url: 'h', contentType: 'text/html' }])[0].unstartable, undefined);
 });
 
+// mhp:mhpVersion texts as an XML AIT carries them (hexadecimal, mis_xmlait.xsd MhpVersion).
+const mv = (profile, major, minor, micro) => ({ profile, versionMajor: major, versionMinor: minor, versionMicro: micro });
+const BASIC = mv('0', '1', '8', '1');
+
 test('clause 5.2.4.2: the XML AIT application with the highest priority of a startable type', () => {
   const apps = [
-    { type: 'application/vnd.hbbtv.xhtml+xml', priority: 9, url: 'hbbtv' },
-    { type: 'text/html', priority: 1, url: 'low' },
-    { type: 'text/html', priority: 3, url: 'high' },
-    { type: 'application/vnd.dvbi.non', priority: 5, url: 'none' },
+    { type: 'application/vnd.hbbtv.xhtml+xml', priority: 9, mhpVersion: BASIC, url: 'hbbtv' },
+    { type: 'text/html', priority: 1, mhpVersion: BASIC, url: 'low' },
+    { type: 'text/html', priority: 3, mhpVersion: BASIC, url: 'high' },
+    { type: 'application/vnd.dvbi.non', priority: 5, mhpVersion: BASIC, url: 'none' },
   ];
   assert.equal(L.selectAitApplication(apps).url, 'high');
-  assert.equal(L.selectAitApplication([{ type: 'application/vnd.dvbi.non', priority: 1, url: 'x' }]), null);
+  assert.equal(L.selectAitApplication([{ type: 'application/vnd.dvbi.non', priority: 1, mhpVersion: BASIC, url: 'x' }]), null);
+});
+
+// TS 102 796 V1.8.1 clause 7.2.3.1, table 5, row 5.2.5: the eight launchable versions, and the
+// basic profile 0x0000, the only one this client supports.
+test('clause 5.2.4.2: platform profile and version per TS 102 796 table 5, others ignored', () => {
+  for (const v of ['1.1.1', '1.2.1', '1.3.1', '1.4.1', '1.5.1', '1.6.1', '1.7.1', '1.8.1']) {
+    assert.ok(L.platformProfileOk(mv('0', ...v.split('.'))), `${v} is launched`);
+  }
+  assert.ok(L.platformProfileOk(mv('0000', '01', '08', '01')), 'leading zeroes are allowed by the hexadecimal types');
+  for (const [m, why] of [
+    [mv('0', '1', '9', '1'), 'a version above table 5'],
+    [mv('0', '2', '0', '0'), 'a version above table 5'],
+    [mv('0', '1', '0', '1'), 'a version not listed'],
+    [mv('0', '1', '8', '0'), 'a version not listed'],
+    [mv('1', '1', '8', '1'), 'the A/V content download profile, not supported'],
+    [mv('2', '1', '8', '1'), 'the PVR profile, not supported'],
+    [mv('3', '1', '8', '1'), 'both features, not supported'],
+    [mv('0', '1', 'x', '1'), 'not hexadecimal'],
+    [mv('0', '', '8', '1'), 'a missing child'],
+    [null, 'no mhpVersion'],
+  ]) assert.equal(L.platformProfileOk(m), false, why);
+
+  const apps = [
+    { type: 'text/html', priority: 9, mhpVersion: mv('0', '1', '9', '1'), url: 'too-new' },
+    { type: 'text/html', priority: 8, mhpVersion: mv('2', '1', '8', '1'), url: 'pvr' },
+    { type: 'text/html', priority: 7, mhpVersion: null, url: 'unsignalled' },
+    { type: 'text/html', priority: 2, mhpVersion: mv('0', '1', '3', '1'), url: 'basic' },
+  ];
+  assert.equal(L.selectAitApplication(apps).url, 'basic', 'the highest priority among those meeting the criterion');
+  assert.equal(L.selectAitApplication(apps.slice(0, 3)), null, 'none meets it');
 });
 
 test('clause 5.1.7: the daily check falls anywhere in the 24 hours', () => {

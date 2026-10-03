@@ -231,16 +231,25 @@ function fixtureHandlingXml(base) {
   });
 }
 
-// An XML AIT with an HbbTV application of higher priority, which this client cannot start, and an
-// HTML5 one (clause 5.2.4.2).
+// mhp:mhpVersion of an XML AIT application (clause 5.2.4.2; ETSI TS 102 796 table 5).
+const mhpVersion = (version = '1.8.1', profile = '0') => {
+  const [major, minor, micro] = version.split('.');
+  return `<mhp:mhpVersion><mhp:profile>${profile}</mhp:profile><mhp:versionMajor>${major}</mhp:versionMajor>` +
+    `<mhp:versionMinor>${minor}</mhp:versionMinor><mhp:versionMicro>${micro}</mhp:versionMicro></mhp:mhpVersion>`;
+};
+
+// An XML AIT with an HbbTV application of higher priority, which this client cannot start, two
+// HTML5 ones of higher priority whose platform profile it cannot run (version 1.9.1 is not in
+// table 5; profile 0x0002 is PVR), and an HTML5 one it can (clause 5.2.4.2).
 function fixtureAit(base, hbbtvOnly = false) {
-  const a = (type, prio, loc) => `<mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type>
-    <mhp:priority>${prio}</mhp:priority></mhp:applicationDescriptor>
+  const a = (type, prio, loc, version, profile) => `<mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type>
+    <mhp:priority>${prio}</mhp:priority>${mhpVersion(version, profile)}</mhp:applicationDescriptor>
     <mhp:applicationTransport><mhp:URLBase>${base}/app/</mhp:URLBase></mhp:applicationTransport>
     <mhp:applicationLocation>${loc}</mhp:applicationLocation></mhp:Application>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <mhp:ServiceDiscovery xmlns:mhp="urn:dvb:mhp:2009"><mhp:ApplicationDiscovery DomainName="example"><mhp:ApplicationList>
-${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' : a('text/html', 1, 'fromait.html')}
+${a('application/vnd.hbbtv.xhtml+xml', 5, 'hbbtv.html')}${hbbtvOnly ? '' :
+  a('text/html', 4, 'too-new.html', '1.9.1') + a('text/html', 3, 'pvr.html', '1.8.1', '2') + a('text/html', 1, 'fromait.html')}
 </mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
 }
 
@@ -323,7 +332,7 @@ function fixtureGuide(req, res, base) {
       <PublishedDuration>PT30M</PublishedDuration><StartOfAvailability>${iso(now - 86400000)}</StartOfAvailability>
       <EndOfAvailability>${iso(now + 86400000)}</EndOfAvailability><DeliveryMode>streaming</DeliveryMode><Free value="true"/></OnDemandProgram>`;
   const ait = (type, loc) => `<?xml version="1.0" encoding="UTF-8"?><mhp:ServiceDiscovery xmlns:mhp="urn:dvb:mhp:2009"><mhp:ApplicationDiscovery DomainName="g">
-    <mhp:ApplicationList><mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type><mhp:priority>1</mhp:priority></mhp:applicationDescriptor>
+    <mhp:ApplicationList><mhp:Application><mhp:applicationDescriptor><mhp:type><mhp:OtherApp>${type}</mhp:OtherApp></mhp:type><mhp:priority>1</mhp:priority>${mhpVersion()}</mhp:applicationDescriptor>
     <mhp:applicationTransport><mhp:URLBase>${base}/app/</mhp:URLBase></mhp:applicationTransport><mhp:applicationLocation>${loc}</mhp:applicationLocation></mhp:Application></mhp:ApplicationList></mhp:ApplicationDiscovery></mhp:ServiceDiscovery>`;
   const xml = body => res.type('application/xml').send(body);
   const group = (id, title, extra = '') => `<GroupInformation groupId="${id}"><BasicDescription><Title>${title}</Title>${extra}</BasicDescription></GroupInformation>`;
@@ -790,7 +799,8 @@ test('an application controlling media presentation presents the service; its ex
 test('an XML AIT is processed to choose the application', { skip: !playwright }, async () => {
   await card('AIT Service').click();
   await page.waitForSelector('#app-frame-wrap:not([hidden])', { timeout: 5000 });
-  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/fromait\.html\?sid=/, 'the HTML5 application, not the HbbTV one');
+  assert.match(await page.getAttribute('#app-frame', 'src'), /\/app\/fromait\.html\?sid=/,
+    'the HTML5 application whose platform profile table 5 admits, not the HbbTV one nor those of higher priority it does not');
 });
 
 test('an instance whose controlling application cannot be started is discarded', { skip: !playwright }, async () => {

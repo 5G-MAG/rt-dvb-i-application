@@ -173,14 +173,45 @@ const DVBIServiceList = (() => {
   // has no HbbTV engine.
   const AIT_TYPES_STARTABLE = ['text/html', 'application/xhtml+xml'];
 
-  // `apps` as parsed from an XML AIT: [{ type, priority, url }]. Clause 5.2.4.2: "select the
-  // application with the highest mhp:priority value that meets all of the following criteria". The
-  // platform profile criterion refers to table 5 of ETSI TS 102 796, which is not held, so it is not
-  // applied. Returns the app or null.
+  // Platform profile criterion of clause 5.2.4.2: "The client shall launch applications signalled
+  // with values of version.major, version.minor, and version.micro according to table 5 of ETSI
+  // TS 102 796 [21]. The client shall ignore applications listed with other values." Reference [21]
+  // is undated, so its latest issue applies, ETSI TS 102 796 V1.8.1 (2026-09). Its table 5, row
+  // "5.2.5 Platform profiles": "Additionally terminals shall launch applications signalled with the
+  // following values for major, minor and micro - [1.1.1], [1.2.1], [1.3.1], [1.4.1], [1.5.1],
+  // [1.6.1], [1.7.1] and [1.8.1]". The same row's "The version fields shall be set as follows"
+  // (1.8.1) is what an AIT producer writes; the launch rule is the sentence above.
+  const AIT_PLATFORM_VERSIONS = ['1.1.1', '1.2.1', '1.3.1', '1.4.1', '1.5.1', '1.6.1', '1.7.1', '1.8.1'];
+  // Same row: "terminals shall be able to run all applications where the signalled application
+  // profile is one of the profiles supported by the terminal. All terminals shall support the basic
+  // profile (0x0000)". This client has neither the A/V content download (0x0001) nor the PVR
+  // (0x0002) feature, so the basic profile is the only one it supports.
+  const AIT_SUPPORTED_PROFILES = [0x0000];
+  // mis_xmlait.xsd, MhpVersion: profile is ipi:Hexadecimal16bit, versionMajor, versionMinor and
+  // versionMicro ipi:Hexadecimal8bit (sdns_v1.4r13.xsd: pattern "[0-9a-fA-F]{1,4}" and "{1,2}").
+  const hex = (v, digits) => (new RegExp(`^[0-9a-fA-F]{1,${digits}}$`).test(String(v ?? '')) ? parseInt(v, 16) : null);
+
+  // `mhpVersion` as read from mhp:mhpVersion: { profile, versionMajor, versionMinor, versionMicro },
+  // the element texts, or null when the element is absent. An application without one does not
+  // meet the criterion: "The platform profile value shall be specified in the child elements of the
+  // mhp:mhpVersion element."
+  function platformProfileOk(mhpVersion) {
+    if (!mhpVersion) return false;
+    const profile = hex(mhpVersion.profile, 4);
+    const v = ['versionMajor', 'versionMinor', 'versionMicro'].map(k => hex(mhpVersion[k], 2));
+    if (profile === null || v.includes(null)) return false;
+    return AIT_SUPPORTED_PROFILES.includes(profile) && AIT_PLATFORM_VERSIONS.includes(v.join('.'));
+  }
+
+  // `apps` as parsed from an XML AIT: [{ type, priority, mhpVersion, url }]. Clause 5.2.4.2:
+  // "select the application with the highest mhp:priority value that meets all of the following
+  // criteria": an application type this client can start, and the platform profile above.
+  // Returns the app or null.
   function selectAitApplication(apps) {
     let best = null;
     for (const a of apps) {
       if (!AIT_TYPES_STARTABLE.includes(String(a.type || '').toLowerCase()) || !a.url) continue;
+      if (!platformProfileOk(a.mhpVersion)) continue;
       if (!best || a.priority > best.priority) best = a;
     }
     return best;
@@ -198,7 +229,7 @@ const DVBIServiceList = (() => {
 
   return {
     inRegion, packageAllows, selectLcnTable, assignChannelNumbers, directlySelectable,
-    minimumAgeFor, restricted, linkedAppTerm, effectiveApps, selectAitApplication, dailyUpdateDelay,
+    minimumAgeFor, restricted, linkedAppTerm, effectiveApps, platformProfileOk, selectAitApplication, dailyUpdateDelay,
     DAY_MS,
   };
 })();

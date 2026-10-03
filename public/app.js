@@ -1734,8 +1734,17 @@ function scheduleProgrammeCheck() {
 // regional filtering by the server (clauses 6.7.2, 6.8): the region chosen in settings.
 function deviceRegions() { return regionFilter ? [regionFilter] : []; }
 
+// The children of an application's mhp:mhpVersion as { profile, versionMajor, versionMinor,
+// versionMicro } (texts), or null when it has none: the platform profile criterion of clause 5.2.4.2.
+function aitMhpVersion(appEl) {
+  const mv = appEl.getElementsByTagNameNS('*', 'mhpVersion')[0];
+  if (!mv) return null;
+  const child = name => (mv.getElementsByTagNameNS('*', name)[0]?.textContent || '').trim();
+  return { profile: child('profile'), versionMajor: child('versionMajor'), versionMinor: child('versionMinor'), versionMicro: child('versionMicro') };
+}
+
 // Fetches an XML AIT with the contextual parameters of clause 5.2.4.4.6 and returns its
-// applications as [{ type, priority, url }], or null when it cannot be had.
+// applications as [{ type, priority, mhpVersion, url }], or null when it cannot be had.
 async function fetchAit(url, launchLocation) {
   const r = await dvbiHttp.get(DVBIGuide.aitUrl(url, deviceRegions(), launchLocation));
   if (!r.ok) return { apps: null, r };
@@ -1745,6 +1754,7 @@ async function fetchAit(url, launchLocation) {
   const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
     type: text(a, 'OtherApp'),
     priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    mhpVersion: aitMhpVersion(a),
     url: text(a, 'URLBase') + text(a, 'applicationLocation'),
   }));
   return { apps, r };
@@ -2212,6 +2222,7 @@ async function resolveLinkedApp(app) {
   const apps = [...doc.getElementsByTagNameNS('*', 'Application')].map(a => ({
     type: text(a, 'OtherApp'),
     priority: parseInt(text(a, 'priority') || '0', 10) || 0,
+    mhpVersion: aitMhpVersion(a),
     url: text(a, 'URLBase') + text(a, 'applicationLocation'),
   }));
   const chosen = DVBIServiceList.selectAitApplication(apps);

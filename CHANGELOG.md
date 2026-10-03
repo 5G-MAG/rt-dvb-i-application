@@ -1,5 +1,13 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — XML AIT platform profile (TS 103 770 V1.2.1 clause 5.2.4.2, TS 102 796 V1.8.1 table 5)
+
+- **An XML AIT application is chosen only when its `mhp:mhpVersion` is one table 5 of ETSI TS 102
+  796 admits**: versions 1.1.1, 1.2.1, 1.3.1, 1.4.1, 1.5.1, 1.6.1, 1.7.1 and 1.8.1, with the basic
+  profile 0x0000, the only one this client supports. An application with another version, another
+  profile or no `mhp:mhpVersion` is ignored, for linked applications, on-demand programmes and the
+  Template XML AIT check alike.
+
 ## 2026-10 — If-None-Match where a server provides an ETag (TS 102 796 clause 7.3.2.6)
 
 - **TS 103 770 V1.2.1 clause 4.3.2.1 has the client follow ETSI TS 102 796 clause 7.3.2.6**, which
