@@ -28,6 +28,14 @@ upstream and `Last-Modified`, `ETag`, `Cache-Control`, `Retry-After` and `Expire
 (clause 4.3; `ETag` and `If-None-Match` for ETSI TS 102 796 clause 7.3.2.6, which clause 4.3.2.1
 refers to; `Expires` for Template XML AITs, clause 5.2.4.4.5).
 
+`https://` targets are fetched with a fixed TLS profile (`UPSTREAM_TLS` in `server.js`), the one
+TS 103 770 clause 7.3 takes from ETSI TS 102 796 V1.8.1 clause 11.2: TLS 1.2 or 1.3; for TLS 1.2 only
+the five cipher suites of table 15a, in its order; the table 15b signature algorithms that are not
+forbidden; the curves X25519, P-256, P-384 and P-521; and OpenSSL security level 2, so RSA keys and
+root certificates under 2 048 bits and SHA-1 or MD5 certificate signatures are refused. It does not
+depend on the Node.js release (Node.js 20 accepts 1 024-bit RSA keys by default). Root certificates
+are the runtime's, plus `NODE_EXTRA_CA_CERTS`; they are not compared with the HbbTV root list.
+
 ## Environment variables
 
 | Variable | Default | What it does |

@@ -83,6 +83,11 @@ The proxy logs the same warning for every plain HTTP request it makes, redirect 
 says whether every address of the endpoint is on one of this server's private subnets. Use
 `https://` to meet the clause outside a private subnet.
 
+**HTTPS requests use the TLS profile of ETSI TS 102 796 clause 11.2**, which TS 103 770 clause 7.3
+names: TLS 1.2 or 1.3, the table 15a cipher suites, no forbidden signature algorithm and no RSA key
+under 2 048 bits. A server that offers nothing within it is refused; [DEPLOYMENT.md](DEPLOYMENT.md)
+gives the profile.
+
 **A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
 private and loopback addresses, which is where a local provider sits, so name its origin explicitly.
 A self-signed certificate on an HTTPS provider is trusted through Node.js's `NODE_EXTRA_CA_CERTS`:

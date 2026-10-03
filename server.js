@@ -186,6 +186,75 @@ async function warnIfPlainHttp(rawUrl) {
   if (w) logger.warn(w.msg, { url: w.url, samePrivateSubnet: w.samePrivateSubnet });
 }
 
+// ── TLS profile of the connections to DVB-I metadata endpoints ───────────────────────────────
+// TS 103 770 V1.2.1 clause 7.3: those connections use "root certificates, cipher suites, signature
+// algorithms, key sizes and elliptic curves as defined in clause 11.2 of ETSI TS 102 796 [21], as
+// applicable for the TLS version used". [21] is undated, so ETSI TS 102 796 V1.8.1 applies. Every
+// request this proxy makes upstream carries these options, rather than inheriting the runtime's
+// defaults, which differ between Node.js releases.
+const UPSTREAM_TLS = Object.freeze({
+  // TS 103 770 clause 7.3: "A DVB-I client shall support TLS version 1.3 defined in IETF RFC 8446
+  // [25] or later, and TLS version 1.2 defined in IETF RFC 5246 [26] for interoperability." TS 102
+  // 796 clause 11.2.1: "Terminals shall not set the client_version field of the TLS 1.2 ClientHello
+  // message to less than { 3, 3 } (TLS 1.2)."
+  minVersion: 'TLSv1.2',
+  maxVersion: 'TLSv1.3',
+  ciphers: [
+    // TLS 1.3, TS 102 796 clause 11.2.2: "Terminals shall support all of the mandatory to implement
+    // cipher suites for TLS 1.3 as specified in IETF RFC 8446 [73], clause 9.1." RFC 8446 clause
+    // 9.1: MUST TLS_AES_128_GCM_SHA256, SHOULD TLS_AES_256_GCM_SHA384 and
+    // TLS_CHACHA20_POLY1305_SHA256.
+    'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256', 'TLS_AES_128_GCM_SHA256',
+    // TLS 1.2, table 15a, in its order ("Terminals should prioritize these cipher suites in the
+    // order shown."): the mandatory and recommended suites, and nothing else, so no suite the table
+    // forbids can be negotiated.
+    'ECDHE-ECDSA-AES128-GCM-SHA256',  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, mandatory
+    'ECDHE-RSA-AES128-GCM-SHA256',    // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, mandatory
+    'ECDHE-ECDSA-AES256-GCM-SHA384',  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, recommended
+    'ECDHE-RSA-AES256-GCM-SHA384',    // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, recommended
+    'AES128-SHA',                     // TLS_RSA_WITH_AES_128_CBC_SHA, mandatory
+    // OpenSSL security level 2: "Security level set to 112 bits of security. As a result RSA, DSA
+    // and DH keys shorter than 2048 bits and ECC keys shorter than 224 bits are prohibited." (OpenSSL
+    // 3.5 SSL_CTX_set_security_level), which applies to "certificate key sizes and signature
+    // algorithms" too. TS 102 796 clause 11.2.3: "Terminals shall not trust any root certificate with
+    // a public key where the number of bits of security provided by the algorithm is less than 112
+    // bits"; clause 11.2.5: "Terminals shall not trust RSA signatures that are less than 2 048 bits
+    // in size."
+    '@SECLEVEL=2',
+  ].join(':'),
+  // Table 15b, the algorithms it marks mandatory or optional; the three it marks forbidden
+  // (md5WithRSAEncryption, rsa_pkcs1_sha1, ecdsa_sha1) are left out: "Terminals shall not trust any
+  // signature that uses an algorithm designated as forbidden." This list governs the handshake
+  // signatures; SHA-1 and MD5 in the certificate chain are refused by the security level above.
+  sigalgs: [
+    'ecdsa_secp256r1_sha256', 'ecdsa_secp384r1_sha384', 'ecdsa_secp521r1_sha512',
+    'rsa_pss_rsae_sha256', 'rsa_pss_rsae_sha384', 'rsa_pss_rsae_sha512',
+    'rsa_pkcs1_sha256', 'rsa_pkcs1_sha384', 'rsa_pkcs1_sha512',
+  ].join(':'),
+  // Clause 11.2.5: "Curves marked mandatory shall be supported for signature verification and key
+  // exchange in TLS 1.2 and for key exchange in TLS 1.3." Table 15c: P-256 and P-384 mandatory,
+  // P-521 optional. X25519 as RFC 8446 clause 9.1 recommends ("SHOULD support key exchange with
+  // X25519").
+  ecdhCurve: ['X25519', 'P-256', 'P-384', 'P-521'].join(':'),
+});
+
+// One GET with UPSTREAM_TLS on https: URLs, answered in the shape fetchChecked and the /proxy route
+// read: { status, headers.get(name), body } with body the response stream.
+function upstreamGet(url, headers) {
+  const u = new URL(url);
+  const lib = u.protocol === 'https:' ? https : http;
+  const options = { method: 'GET', headers, ...(u.protocol === 'https:' ? UPSTREAM_TLS : {}) };
+  return new Promise((resolve, reject) => {
+    const req = lib.request(u, options, res => resolve({
+      status: res.statusCode,
+      headers: { get: name => { const v = res.headers[name.toLowerCase()]; return v == null ? null : [].concat(v).join(', '); } },
+      body: res,
+    }));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 // Read a response body with a ceiling on it. Without one, this endpoint reads whatever the
 // upstream sends fully into memory before answering, so a single request naming a large or endless
 // resource exhausts the process. A service list is metadata: PROXY_MAX_BYTES bounds it generously
@@ -197,6 +266,7 @@ const PROXY_MAX_BYTES = Number(process.env.PROXY_MAX_BYTES || 10 * 1024 * 1024);
 async function readCapped(response) {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > PROXY_MAX_BYTES) {
+    response.body.destroy();
     throw new Error(`Response is ${declared} bytes, over the ${PROXY_MAX_BYTES} byte limit`);
   }
   const chunks = [];
@@ -230,9 +300,10 @@ async function fetchChecked(url, headers) {
   for (let hop = 0; ; hop++) {
     await assertSafeUrl(current);
     await warnIfPlainHttp(current);
-    const upstream = await fetch(current, { headers, redirect: 'manual' });
+    const upstream = await upstreamGet(current, headers);
     const location = upstream.headers.get('location');
     if (!REDIRECT_STATUSES.has(upstream.status) || !location) return upstream;
+    upstream.body.resume();
     if (hop + 1 >= REDIRECT_LIMIT) throw new Error(`more than ${REDIRECT_LIMIT} redirects`);
     current = new URL(location, current).href;
   }
@@ -257,7 +328,7 @@ app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
       const v = upstream.headers.get(h);
       if (v) res.setHeader(h, v);
     }
-    if (upstream.status === 304) return res.end();
+    if (upstream.status === 304) { upstream.body.resume(); return res.end(); }
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/xml');
     // end() rather than send(): send() would answer 304 by itself from the forwarded
     // Last-Modified, which is the origin's decision to make, not this proxy's.
@@ -305,4 +376,4 @@ function startServer() {
 
 if (require.main === module) startServer();
 
-module.exports = { app, startServer, isPrivateIp, assertSafeUrl, isRfc1918, onSamePrivateSubnet, plainHttpWarning };
+module.exports = { app, startServer, isPrivateIp, assertSafeUrl, isRfc1918, onSamePrivateSubnet, plainHttpWarning, UPSTREAM_TLS };

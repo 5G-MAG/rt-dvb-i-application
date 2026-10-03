@@ -1,5 +1,15 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — TLS profile of ETSI TS 102 796 V1.8.1 clause 11.2 (TS 103 770 V1.2.1 clause 7.3)
+
+- **The proxy connects to `https://` metadata endpoints with an explicit TLS profile** instead of
+  the runtime's defaults: TLS 1.2 or 1.3; for TLS 1.2 only the table 15a suites; signature
+  algorithms of table 15b other than the forbidden ones; curves X25519, P-256, P-384, P-521; and a
+  112-bit security level, so a server key or root certificate under 2 048 bits and a SHA-1 signed
+  certificate are refused, whatever the Node.js release.
+- Upstream requests are made with Node.js `https.request` rather than `fetch`, so that these
+  options can be set. They no longer ask for compressed responses.
+
 ## 2026-10 — JPEG and PNG images only, no GIF (TS 103 770 V1.2.1 clause 5.2.8.3, TS 102 796 V1.8.1 clause 7.1.1)
 
 - **Service list logos, service logos, content finished images and content guide images are shown
