@@ -376,10 +376,13 @@ function fixtureGuide(req, res, base) {
     return results([['crid://g/ep2', 'Episode 2', 2, 'template-ok.xml'], ['crid://g/ep1', 'Episode 1', 1, 'template-hbbtv.xml']],
       page('next', next) + page('last', next));
   }
-  if (/\/group\/categories$/.test(path)) return xml(tva(`<GroupInformationTable>${group('crid://g/cat/drama', 'Drama')}</GroupInformationTable>`));
+  if (/\/group\/categories$/.test(path)) return xml(tva(`<GroupInformationTable>${group('crid://g/cat/drama', 'Drama',
+    `<RelatedMaterial><HowRelated href="urn:tva:metadata:cs:HowRelatedCS:2012:19"/><MediaLocator><MediaUri contentType="image/gif">${base}/img/drama.gif</MediaUri></MediaLocator></RelatedMaterial>`)}</GroupInformationTable>`));
   if (/\/group\/$/.test(path)) {
     const tmpl = t => `<RelatedMaterial><HowRelated href="urn:fvc:metadata:cs:HowRelatedCS:2018:templateAIT"/><MediaLocator><MediaUri/><AuxiliaryURI contentType="application/vnd.dvb.ait+xml">${base}/cg/ait/${t}</AuxiliaryURI></MediaLocator></RelatedMaterial>`;
-    return xml(tva(`<GroupInformationTable>${group('crid://g/box/ok', 'Playable Box', tmpl('template-ok.xml'))}${group('crid://g/box/hbbtv', 'HbbTV Box', tmpl('template-hbbtv.xml'))}</GroupInformationTable>`));
+    // Promotional stills (HowRelatedCS:2012:19): a GIF then a PNG for the playable box (clause 5.2.8.3).
+    const still = (type, file) => `<RelatedMaterial><HowRelated href="urn:tva:metadata:cs:HowRelatedCS:2012:19"/><MediaLocator><MediaUri contentType="${type}">${base}/img/${file}</MediaUri></MediaLocator></RelatedMaterial>`;
+    return xml(tva(`<GroupInformationTable>${group('crid://g/box/ok', 'Playable Box', tmpl('template-ok.xml') + still('image/gif', 'box.gif') + still('image/png', 'box.png'))}${group('crid://g/box/hbbtv', 'HbbTV Box', tmpl('template-hbbtv.xml'))}</GroupInformationTable>`));
   }
   if (/\/group\/contents$/.test(path)) return results([['crid://g/box/e1', 'Box Episode', 1, 'template-ok.xml']]);
   if (path === 'ait/deep.xml') return res.type('application/vnd.dvb.ait+xml').send(ait('text/html', `ondemand.html?pid=${q.get('pid')}`));
@@ -467,6 +470,11 @@ before(async () => {
   app.get('/registry', (req, res) => { hits.registryQuery = req.originalUrl; res.type('application/xml').send(fixtureRegistryXml(baseUrl)); });
   app.get('/registry-reg-dvbs', (req, res) => res.type('application/xml').send(fixtureRegistryXml(baseUrl, { regulatorDvbs: true })));
   app.get('/img/finished.png', (req, res) => res.type('image/png').send(Buffer.alloc(0)));
+  // Decodable 1x1 images, so that an <img> is kept rather than removed by its onerror handler.
+  const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+  const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+  app.get('/img/box.png', (req, res) => res.type('image/png').send(PNG_1X1));
+  app.get(['/img/box.gif', '/img/drama.gif'], (req, res) => res.type('image/gif').send(GIF_1X1));
 
   // BROWSER selects the engine, chromium by default because it is the closest stand-in for what
   // most viewers run. Some environments cannot run it: where the sandbox stops a renderer process
@@ -529,6 +537,11 @@ test('receiver loads a service list and renders channels from it', { skip: !play
   assert.ok(names.some(n => n.includes('Alpha One')), `expected "Alpha One" among: ${JSON.stringify(names)}`);
   assert.ok(names.some(n => n.includes('Beta Radio')), `expected "Beta Radio" among: ${JSON.stringify(names)}`);
   assert.ok(names.some(n => n.includes('Gamma TV')), `expected "Gamma TV" among: ${JSON.stringify(names)}`);
+
+  // Service logos (clause 5.2.6.2): Alpha signals a GIF before a PNG, Beta only a GIF, which is not
+  // shown (clause 5.2.8.3, "GIF images are not supported").
+  assert.equal(await page.getAttribute('.ch-card:has(.ch-name:text("Alpha One")) img.ch-logo', 'src'), 'https://example.com/logos/svc-a.png');
+  assert.equal(await page.locator('.ch-card:has(.ch-name:text("Beta Radio")) img.ch-logo').count(), 0, 'no GIF logo');
 
   // No uncaught JS errors during load/parse/render.
   assert.deepEqual(consoleErrors, [], `unexpected console/page errors: ${JSON.stringify(consoleErrors)}`);
@@ -1066,9 +1079,12 @@ test('box sets: categories, lists filtered by Template XML AIT, contents', { ski
   await page.click('#tb-boxset-btn');
   await page.waitForSelector('#browse-list .browse-item:has-text("Drama")', { timeout: 5000 });
   assert.ok(cgRequests.includes('/cg/top/group/categories?sid%5B%5D=tag%3Ag%2C2026%3Atop'));
+  assert.equal(await page.locator('#browse-list .browse-item:has-text("Drama") img').count(), 0, 'a GIF image is not shown (clause 5.2.8.3)');
   await page.click('#browse-list .browse-item:has-text("Drama")');
   await page.waitForSelector('#browse-list .browse-item:has-text("Playable Box")', { timeout: 5000 });
   assert.equal(await page.locator('#browse-list .browse-item:has-text("HbbTV Box")').count(), 0);
+  assert.equal(await page.getAttribute('#browse-list .browse-item:has-text("Playable Box") img', 'src'), `${baseUrl}/img/box.png`,
+    'the PNG, not the GIF signalled before it');
   await page.click('#browse-list .browse-item:has-text("Playable Box")');
   await page.waitForSelector('#browse-list .browse-item:has-text("Box Episode")', { timeout: 5000 });
   assert.ok(cgRequests.includes('/cg/top/group/contents?groupId=crid%3A%2F%2Fg%2Fbox%2Fok&format=paginated'));

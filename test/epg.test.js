@@ -75,3 +75,10 @@ test('getGenres: dedupes and drops falsy genres', () => {
   const events = [{ genre: 'news' }, { genre: 'news' }, { genre: 'sport' }, { genre: null }, { genre: '' }];
   assert.deepEqual(DVBIEpg.getGenres(events), ['news', 'sport']);
 });
+
+// TS 103 770 V1.2.1 clause 5.2.8.3: JPEG or PNG, "with the exception that GIF images are not
+// supported"; OIPF Release 2 volume 2 clauses 9.1.1 and 9.1.3 give their media types.
+test('clause 5.2.8.3: only JPEG and PNG images are shown, GIF is not', () => {
+  for (const t of ['image/jpeg', 'image/png', 'IMAGE/PNG', 'image/png; q=1']) assert.equal(DVBIEpg.imageTypeOk(t), true, t);
+  for (const t of ['image/gif', 'image/svg+xml', 'image/webp', 'image/jpg', '', null]) assert.equal(DVBIEpg.imageTypeOk(t), false, String(t));
+});

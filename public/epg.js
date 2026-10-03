@@ -28,6 +28,20 @@ const DVBIEpg = (() => {
     return ((+m[1]||0) * 86400 + (+m[2]||0) * 3600 + (+m[3]||0) * 60 + (+m[4]||0)) * 1000;
   }
 
+  // Image formats this client shows, from the service list and the content guide alike: JPEG and
+  // PNG. TS 103 770 V1.2.1 clause 5.2.8.3: "A Content Guide Server shall return an image of the
+  // required dimensions in JPEG or PNG format as specified in clause 7.1.1 of ETSI TS 102 796 [21],
+  // with the exception that GIF images are not supported. The format shall be specified in the
+  // MediaUri@contentType attribute." TS 102 796 V1.8.1 clause 7.1.1 has the formats "comply with
+  // clause 9.1 of the OIPF media formats specification [2]", whose clauses 9.1.1 and 9.1.3 give
+  // "image/jpeg" and "image/png". For service list images (clauses 5.2.6.1 to 5.2.6.4, 5.2.7.3) at
+  // least one JPEG or PNG is always to be provided, so taking only those loses no image. A media
+  // type is matched without case and without parameters (RFC 9110 clause 8.3.1).
+  function imageTypeOk(contentType) {
+    const type = String(contentType || '').split(';')[0].trim().toLowerCase();
+    return type === 'image/jpeg' || type === 'image/png';
+  }
+
   function parseImage(pi, ns) {
     const _ns = ns || NS;
     for (const rm of pi.getElementsByTagNameNS(_ns, 'RelatedMaterial')) {
@@ -36,7 +50,7 @@ const DVBIEpg = (() => {
         const href = hr.getAttribute('href') || '';
         // Match spec promotional still (:19) or legacy (:1001), not service logo (:1001.2)
         if (/:19$/.test(href) || href.endsWith('/19') || /:1001$/.test(href) || href.endsWith('/1001')) {
-          const mu = rm.getElementsByTagNameNS(_ns, 'MediaUri')[0];
+          const mu = [...rm.getElementsByTagNameNS(_ns, 'MediaUri')].find(m => imageTypeOk(m.getAttribute('contentType')));
           if (mu) return mu.textContent.trim();
         }
       }
@@ -534,7 +548,7 @@ const DVBIEpg = (() => {
     }
   }
 
-  return { loadSchedule, loadNowNext, loadProgram, loadResults, parseTVA, parseResults, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration };
+  return { loadSchedule, loadNowNext, loadProgram, loadResults, parseTVA, parseResults, getNowNext, render, renderFull, getGenres, renderGrid, parseISODuration, imageTypeOk };
 })();
 
 // Exposed for Node-based unit tests (test/epg.test.js). `module` is undefined when loaded via a

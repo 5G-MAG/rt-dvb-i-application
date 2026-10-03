@@ -454,16 +454,23 @@ function parseLinkedApps(parent) {
   return apps;
 }
 
-// Content finished image (clause 5.2.7.3), HowRelatedCS:2021:1000.2: the image in the preferred
-// audio language if there is one, else the first JPEG or PNG ("At least one content finished image
-// shall be provided with the Media Type image/jpeg or image/png"), else the first image.
+// Content finished image (clause 5.2.7.3), HowRelatedCS:2021:1000.2: of its JPEG and PNG images
+// ("At least one content finished image shall be provided with the Media Type image/jpeg or
+// image/png"; the formats this client shows, DVBIEpg.imageTypeOk), the one in the preferred audio
+// language if there is one, else the first.
 const CONTENT_FINISHED = 'urn:dvb:metadata:cs:HowRelatedCS:2021:1000.2';
 function parseContentFinishedImage(parent) {
   const rm = relatedMaterial(parent).find(r => r.href === CONTENT_FINISHED);
-  if (!rm || !rm.uris.length) return null;
-  const jpegPng = rm.uris.filter(u => /^image\/(jpeg|png)$/i.test(u.contentType));
-  return rm.uris.map(u => ({ url: u.url, contentType: u.contentType, lang: u.lang }))
-    .find(u => langPref && u.lang.toLowerCase().startsWith(langPref)) || jpegPng[0] || rm.uris[0];
+  const jpegPng = (rm ? rm.uris : []).filter(u => DVBIEpg.imageTypeOk(u.contentType));
+  if (!jpegPng.length) return null;
+  return jpegPng.map(u => ({ url: u.url, contentType: u.contentType, lang: u.lang }))
+    .find(u => langPref && u.lang.toLowerCase().startsWith(langPref)) || jpegPng[0];
+}
+
+// The first JPEG or PNG MediaUri of a RelatedMaterial element (DVBIEpg.imageTypeOk), or null.
+function jpegPngUri(rm) {
+  const mu = [...rm.getElementsByTagNameNS('*', 'MediaUri')].find(m => DVBIEpg.imageTypeOk(m.getAttribute('contentType')));
+  return mu ? mu.textContent.trim() || null : null;
 }
 
 // Availability of a service instance (clause 5.5.15, table 26) as the model of instances.js, or null
@@ -601,10 +608,8 @@ function parseServiceList(doc) {
       const hr = rm.getElementsByTagNameNS(NS_TVA, 'HowRelated')[0]
               || rm.getElementsByTagNameNS(NS, 'HowRelated')[0];
       if (hr && (hr.getAttribute('href') || '').includes('1001.2')) {
-        const uri = rm.getElementsByTagNameNS(NS_TVA, 'MediaUri')[0]
-                 || rm.getElementsByTagNameNS(NS, 'MediaUri')[0]
-                 || Array.from(rm.getElementsByTagName('*')).find(el => el.localName === 'MediaUri');
-        if (uri) { logo = uri.textContent.trim(); break; }
+        logo = jpegPngUri(rm);
+        if (logo) break;
       }
     }
 
@@ -2354,8 +2359,7 @@ function offeringDetails(offering) {
   let logo = null;
   for (const rm of kids(offering, 'RelatedMaterial')) {
     const hr = rm.getElementsByTagNameNS('*', 'HowRelated')[0];
-    const mu = rm.getElementsByTagNameNS('*', 'MediaUri')[0];
-    if (hr && hr.getAttribute('href') === 'urn:dvb:metadata:cs:HowRelatedCS:2021:1001.1' && mu) { logo = mu.textContent.trim(); break; }
+    if (hr && hr.getAttribute('href') === 'urn:dvb:metadata:cs:HowRelatedCS:2021:1001.1') { logo = jpegPngUri(rm); if (logo) break; }
   }
   // The Provider of the ProviderOffering this offering belongs to, and its @regulatorFlag (table 10).
   const providerEl = offering.parentElement && kids(offering.parentElement, 'Provider')[0];

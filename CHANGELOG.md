@@ -1,5 +1,11 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — JPEG and PNG images only, no GIF (TS 103 770 V1.2.1 clause 5.2.8.3, TS 102 796 V1.8.1 clause 7.1.1)
+
+- **Service list logos, service logos, content finished images and content guide images are shown
+  only when signalled as `image/jpeg` or `image/png`.** A GIF (or any other type, or none) is
+  skipped and the next JPEG or PNG of the same element is used; with none, no image is shown.
+
 ## 2026-10 — Launch location of linked applications (TS 103 770 V1.2.1 clause 5.2.3.1, TS 102 796 V1.8.1 clause 6.2.2.6.2)
 
 - **A linked application is launched with `lloc`**: "service" for an application controlling media
