@@ -35,28 +35,34 @@
 
 ## Introduction
 
-This is the DVB-I client of the architecture in TS 103 770 clause 4.1. The small Node server serves
-the page and proxies the metadata requests the browser cannot make itself because of CORS. Media
-segments are fetched by the player directly, not through the server.
-
-The client can be pointed at a service list URL, or can ask a Service List Registry which lists
-exist for a country and offer the results.
+The DVB-I client: a browser page, served by a small Node.js server, that loads a DVB-I service list
+and its content guide and plays the services. The server also proxies the metadata requests the
+browser cannot make itself. It is used with the service list and content guide of
+`rt-dvb-i-application-provider` and the registry of `rt-dvb-i-service-list-registry`.
 
 ## Specification
 
-Built against **ETSI TS 103 770 V1.2.1 (2024-09)**, a version rather than a release name.
+Built against **ETSI TS 103 770 V1.2.1 (2024-09)**.
 
-Clause-by-clause coverage, and what is still absent, is recorded on the project page rather than
-here: <https://www.5g-mag.com/reference-tools/dvb-i>
+What the specification defines, and what this repository implements and does not, is on the project
+page: <https://www.5g-mag.com/reference-tools/dvb-i>
 
-For 5G Broadcast it checks and shows the `mbms://` signalling rather than playing it; see
-[5G Broadcast instances](#5g-broadcast-instances) below.
+## Install dependencies
+
+Node.js 20 or later, with npm, and `openssl` for the tests.
 
 ## Downloading
 
 ```bash
 cd ~
 git clone https://github.com/5G-MAG/rt-dvb-i-application.git
+```
+
+## Building
+
+```bash
+cd rt-dvb-i-application
+npm install
 ```
 
 ## Running
@@ -74,23 +80,8 @@ URL, or pass it in the query string:
 http://localhost:5000/?url=http://localhost:4000/service-list.xml
 ```
 
-**Plain HTTP is loaded with a warning.** ETSI TS 103 770 V1.2.1 clause 7.3 requires HTTP over TLS to
-service list registries, service list servers and content guide servers, except: "For the specific
-case that a DVB-I client connects to a DVB-I metadata endpoint located on the same private subnet
-(see clause 3 of IETF RFC 1918 [27]), HTTP may be used without TLS." An `http://` service list is
-still loaded, and a warning under the list name says it is not over TLS and quotes that exception.
-The proxy logs the same warning for every plain HTTP request it makes, redirect hops included, and
-says whether every address of the endpoint is on one of this server's private subnets. Use
-`https://` to meet the clause outside a private subnet.
-
-**HTTPS requests use the TLS profile of ETSI TS 102 796 clause 11.2**, which TS 103 770 clause 7.3
-names: TLS 1.2 or 1.3, the table 15a cipher suites, no forbidden signature algorithm and no RSA key
-under 2 048 bits. A server that offers nothing within it is refused; [DEPLOYMENT.md](DEPLOYMENT.md)
-gives the profile.
-
-**A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
-private and loopback addresses, which is where a local provider sits, so name its origin explicitly.
-A self-signed certificate on an HTTPS provider is trusted through Node.js's `NODE_EXTRA_CA_CERTS`:
+A list published on the same machine needs `PROXY_ALLOW_ORIGINS`, and a self-signed certificate on
+an HTTPS provider is trusted through `NODE_EXTRA_CA_CERTS`:
 
 ```bash
 PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
@@ -100,25 +91,23 @@ NODE_EXTRA_CA_CERTS=/path/to/provider-cert.pem npm start
 
 ## Configuration
 
-The server is configured through environment variables: `PORT` (default `5000`),
-`PROXY_ALLOW_ORIGINS`, `PROXY_MAX_BYTES`, `LOG_LEVEL`, and `HTTPS_KEY_PATH` with `HTTPS_CERT_PATH`
-for native HTTPS. [DEPLOYMENT.md](DEPLOYMENT.md) gives each one with its default, and describes
-HTTPS, the proxy guard and the pinned player libraries.
+| Variable | Default | What it sets |
+|---|---|---|
+| `PORT` | `5000` | port to listen on |
+| `PROXY_ALLOW_ORIGINS` | unset | comma-separated origins `/proxy` may fetch although they resolve to a private or loopback address, matched exactly on scheme, host and port. Without it a service list published on the same machine cannot be loaded. Example: `http://localhost:4000,http://127.0.0.1:4000`. |
+| `PROXY_MAX_BYTES` | `10485760` | largest proxied response; a larger body is refused with 502 |
+| `NODE_EXTRA_CA_CERTS` | unset | a PEM file of extra certificate authorities `/proxy` trusts, for example a local provider's self-signed certificate |
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info` or `debug`; logs are JSON lines on stdout and stderr |
+| `HTTPS_KEY_PATH`, `HTTPS_CERT_PATH` | unset | PEM key and certificate to serve HTTPS directly instead of behind a reverse proxy |
+| `BROWSER` | `chromium` | engine for the Playwright tests |
+| `CHROMIUM_ARGS` | unset | extra Chromium launch flags, applied only when `BROWSER` is Chromium |
 
-## 5G Broadcast instances
+`hls.js` and `dash.js` are loaded from CDNs pinned to exact versions with Subresource Integrity. To
+upgrade one, change the version in `public/index.html` and regenerate its hash:
 
-A service list may carry service instances delivered over 5G Broadcast (MBMS), as
-`IdentifierBasedDeliveryParameters` holding an `mbms://` locator. ETSI TS 103 770 V1.2.1 clause
-9.3.3 has the client pass that locator to an MBMS Client; a browser has no MBMS Client, so this one
-checks the signalling and shows it instead:
-
-- a **5G** badge whose tooltip gives the locator, its priority and the MBMS User Service it names
-  (the part before the first `&`, ETSI TS 126 347 clause 8.2.2);
-- a red **5G** badge saying what is wrong when the locator is not an MBMS URL by that clause;
-- "5G only", with a message, when the service lists no other instance. Otherwise another instance of
-  the service plays.
-
-The check is `public/mbms-url.js`, tested by `test/mbms-url.test.js`.
+```bash
+curl -sL <pinned-url> | openssl dgst -sha384 -binary | openssl base64 -A
+```
 
 ## Development
 
@@ -128,15 +117,14 @@ BROWSER=firefox npm test    # where Chromium cannot run
 npx playwright install chromium firefox
 ```
 
-The browser and proxy tests serve over HTTPS with a throwaway certificate made by the `openssl`
-command line when they start, so `openssl` must be installed.
+```
+npm run test:unit # unit tests only, no browser required
+npm run test:e2e  # E2E only
+```
 
-Some environments cannot run Chromium at all: every subresource fetch fails with
-`ERR_INSUFFICIENT_RESOURCES` and the renderer crashes, so the page loads and nothing renders. That
-looks like a defect in this application and is not one; `BROWSER=firefox` runs the identical suite.
-
-The tests are in `test/`, and CI runs them from `.github/workflows/test.yml`. Changes are recorded
-in [CHANGELOG.md](CHANGELOG.md).
+The browser and proxy tests serve over HTTPS with a throwaway certificate made with `openssl`. In
+environments where Chromium cannot run (every subresource fails with `ERR_INSUFFICIENT_RESOURCES`),
+`BROWSER=firefox` runs the same suite. CI runs the tests from `.github/workflows/test.yml`.
 
 ## Contributing
 

@@ -345,7 +345,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 // ── Server startup ────────────────────────────────────────────────────────────
 // Optional native HTTPS via HTTPS_KEY_PATH/HTTPS_CERT_PATH (PEM file paths). Falls back to plain
 // HTTP if unset — the recommended production pattern is TLS termination at a reverse proxy
-// (see DEPLOYMENT.md), but native HTTPS is supported for standalone deployments.
+// (README, Configuration), but native HTTPS is supported for standalone deployments.
 function startServer() {
   if (PROXY_ALLOW_ORIGINS.size) {
     logger.warn('/proxy will follow these origins without the private-address check', {
