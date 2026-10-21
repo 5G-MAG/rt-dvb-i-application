@@ -372,3 +372,30 @@ test('the registry address has no default and says so when it is missing', { ski
   assert.match(await page.textContent('#slr-results'), /No Service List Registry address is set/);
   assert.equal(requests.filter(u => /TargetCountry|slrdb/.test(u)).length, 0, 'no request is sent without an address');
 });
+
+// TS 103 770 V1.2.1 table 16 / schema: ServiceInstance@priority is optional and defaults to 0, the
+// highest priority. An instance without it must therefore come before one that says priority="1".
+test('a ServiceInstance without @priority has priority 0 and sorts first', { skip: !playwright }, async () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ServiceList xmlns="urn:dvb:metadata:servicediscovery:2024" id="tag:t,2026:l" version="1" xml:lang="en">
+  <Name>P</Name><ProviderName>P</ProviderName>
+  <Service version="1">
+    <UniqueIdentifier>tag:t,2026:service:p</UniqueIdentifier>
+    <ServiceInstance priority="1"><DisplayName>Explicit one</DisplayName>
+      <DASHDeliveryParameters><UriBasedLocation contentType="application/dash+xml"><URI>https://x.example/one.mpd</URI></UriBasedLocation></DASHDeliveryParameters>
+    </ServiceInstance>
+    <ServiceInstance><DisplayName>No priority</DisplayName>
+      <DASHDeliveryParameters><UriBasedLocation contentType="application/dash+xml"><URI>https://x.example/none.mpd</URI></UriBasedLocation></DASHDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>P</ServiceName><ProviderName>P</ProviderName>
+  </Service>
+</ServiceList>`;
+  const inst = await page.evaluate(x => {
+    const r = parseServiceList(new DOMParser().parseFromString(x, 'application/xml'));
+    return r.services[0].instances.map(i => ({ url: i.url, priority: i.priority }));
+  }, xml);
+  assert.deepEqual(inst, [
+    { url: 'https://x.example/none.mpd', priority: 0 },
+    { url: 'https://x.example/one.mpd', priority: 1 },
+  ]);
+});

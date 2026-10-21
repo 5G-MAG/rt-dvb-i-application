@@ -90,6 +90,9 @@ http://localhost:5000/?url=http://localhost:4000/service-list.xml
 The Service List Registry address has no default: no registry address is given by TS 103 770 or
 TR 103 972, and the one this client used earlier no longer answers. Enter the registry's query
 address in settings before looking up a country.
+The host names in the examples of TS 103 770 clause 5.1.3 (`csr.dvbservices.com`) are examples only,
+not designated defaults: the specification notes that at the time of writing there is no Central
+Service List Registry.
 
 ## Configuration
 

@@ -6,8 +6,10 @@ function esc(s) {
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
 // No default registry address. The one shipped earlier (slrdb.org/dvbi/provider-offerings) answers
-// 404, and neither TS 103 770 V1.2.1 nor TR 103 972 names a registry to use: the examples in
-// TS 103 770 clause 5.1.3 use placeholder hosts. The address is entered in settings and kept.
+// 404, and neither TS 103 770 V1.2.1 nor TR 103 972 names a registry to use. The examples in
+// clause 5.1.3 (host csr.dvbservices.com, contact dvbi_csr@dvbservices.com) are examples only, not
+// designated defaults: the note in clause 8.5.3.1 says "At the time of writing, there is no Central Service
+// List Registry". The address is entered in settings and kept.
 const DEFAULT_REGISTRY = '';
 const RETIRED_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 // Namespace of the LOCAL 5G delivery extension. Nothing in DVB defines it: TS 103 770 has no MBMS
@@ -563,7 +565,9 @@ function parseServiceList(doc) {
     // reachable over 5G broadcast AND marked as relying on a non-DVB extension.
     let mbms5g = null;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
-      const priority = parseInt(inst.getAttribute('priority') || '99', 10);
+      // @priority is optional; when absent it is 0 (the schema's default, TS 103 770 clause 5.5.4
+      // and the schema's default; table 16 lists the attribute as optional), the highest priority, so an instance with no @priority sorts first, not last.
+      const priority = parseInt(inst.getAttribute('priority') || '0', 10);
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
 
       // Broadcast-only delivery (DVB-T/S/C tuning triplet, TS 103 770 §5.5.18 Delivery Parameters) — a browser has no TV tuner,

@@ -2,13 +2,16 @@
 
 ## 2026-10 — Defaults and the 5G unicast fallback
 
+- **A missing `ServiceInstance@priority` is 0**, as the schema's default says (clause 5.5.4, table 16 lists it as optional), not 99. An instance without it now ranks first, not last.
 - **The 5G extension's `UnicastFallback` is played.** It was stored and never used, so a service
   with only a 5G instance and a fallback URL showed "5G only" and said it listed no fallback. The
   URL now becomes a playable instance at the 5G instance's priority (DASH or HLS from the URL),
   unless the service already lists it. The extension is local; TR 103 972 clauses 6.4.3.1 to
   6.4.3.3 describe offering a unicast instance beside the 5G one.
 - **No default registry address.** `https://slrdb.org/dvbi/provider-offerings` answers 404 and no
-  specification names a registry. The field starts empty, a lookup without an address says so, and
+  specification names a registry. The hosts in the clause 5.1.3 examples
+  (`csr.dvbservices.com`) are examples only, not designated defaults (clause 8.5.3.1, note 1: there is no
+  Central Service List Registry). The field starts empty, a lookup without an address says so, and
   a failed lookup shows its reason. The retired value stored by earlier versions is dropped.
 - **The "DVB Sample" preset is removed**; its repository, DVBproject/dvbi-api-demos, answers 404.
 - **A plain `npm start` loads the default local list.** When `PROXY_ALLOW_ORIGINS` is not set,
