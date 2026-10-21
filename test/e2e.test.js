@@ -94,6 +94,19 @@ function fixture5gXml(base) {
     <ServiceName>Only 5G</ServiceName>
     <ProviderName>Sample Provider</ProviderName>
   </Service>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:5gfallback</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DisplayName>5G With Fallback</DisplayName>
+      <OtherDeliveryParameters extensionName="urn:5g-mag:dvbi-5g:mbms" xsi:type="dvbi5g:MBMSDeliveryParametersType">
+        <dvbi5g:ServiceLocator>urn:3gpp:mbms:service:fb</dvbi5g:ServiceLocator>
+        <dvbi5g:ServiceClass>urn:dvb:metadata:serviceClass:DVB-I_Service_Instance:1</dvbi5g:ServiceClass>
+        <dvbi5g:UnicastFallback>${base}/hls/fallback.m3u8</dvbi5g:UnicastFallback>
+      </OtherDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>5G With Fallback</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
 </ServiceList>`;
 }
 
@@ -307,4 +320,33 @@ test('services using the local 5G extension are badged as an extension', { skip:
   await only.click();
   await page.waitForSelector('#play-error:not([hidden])', { timeout: 5000 });
   assert.match((await page.textContent('#play-error-msg')).trim(), /5G broadcast \(MBMS\) only/);
+});
+
+// A service whose only instance is the local 5G extension, with a UnicastFallback URL: the
+// receiver cannot join an MBMS bearer, so the fallback is what it must play, rather than showing
+// "5G only" and saying the service lists no fallback. The fallback URL is not repeated by another
+// instance in this service, and is an HLS playlist here to check the type is taken from the URL.
+test('the 5G extension UnicastFallback is played when the 5G instance cannot be', { skip: !playwright }, async () => {
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list-5g.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+
+  const card = page.locator('.ch-card:has(.ch-name:text("5G With Fallback"))');
+  assert.equal(await card.locator('.ch-badge-mc').count(), 0, 'not shown as "5G only" when a fallback exists');
+  assert.equal(await card.evaluate(el => el.classList.contains('no-delivery')), false);
+
+  const inst = await page.evaluate(() => services.find(s => s.name === '5G With Fallback').instances);
+  assert.equal(inst.length, 1);
+  assert.equal(inst[0].url, `${baseUrl}/hls/fallback.m3u8`);
+  assert.equal(inst[0].type, 'application/vnd.apple.mpegurl');
+
+  // The player is the part that needs CDN libraries, so record what it is asked to play.
+  await page.evaluate(() => { window.__played = []; DVBIPlayer.play = (v, url, type) => window.__played.push({ url, type }); });
+  await card.click();
+  const played = await page.evaluate(() => window.__played);
+  assert.deepEqual(played, [{ url: `${baseUrl}/hls/fallback.m3u8`, type: 'application/vnd.apple.mpegurl' }]);
+  assert.equal(await page.locator('#play-error').isHidden(), true, 'no "lists no unicast fallback" error');
+
+  // Where the service already lists the same URL as an instance of its own, it is not doubled.
+  const hybrid = await page.evaluate(() => services.find(s => s.name === 'Hybrid 5G').instances.map(i => i.url));
+  assert.deepEqual(hybrid, [`${baseUrl}/dash/hybrid.mpd`]);
 });

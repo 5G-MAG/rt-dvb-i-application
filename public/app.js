@@ -600,7 +600,8 @@ function parseServiceList(doc) {
 
       // The local 5G extension, recognised by its own namespace so a document that does not use it
       // is unaffected. It yields no playable instance: a browser cannot join an MBMS bearer, so the
-      // unicast fallback the extension names is what actually plays.
+      // unicast fallback the extension names is what actually plays (added as a playable instance
+      // after the loop below).
       if (!mbms5g) {
         const ext5g = [...inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')]
           .find(e => e.getElementsByTagNameNS(NS_DVBI_5G, 'ServiceLocator')[0]);
@@ -610,6 +611,7 @@ function parseServiceList(doc) {
             locator:      pick('ServiceLocator'),
             serviceClass: pick('ServiceClass'),
             fallback:     pick('UnicastFallback'),
+            priority,
             extensionName: ext5g.getAttribute('extensionName') || null,
           };
         }
@@ -711,6 +713,21 @@ function parseServiceList(doc) {
       type: aspEl.getAttribute('xsi:type') || '',
       name: aspEl.getAttribute('extensionName') || '',
     } : null;
+
+    // The unicast fallback named by the local 5G extension. The 5G instance itself is not playable
+    // in a browser, so the fallback URL becomes an ordinary instance at the priority of the 5G
+    // instance, unless the service already lists that URL as an instance of its own. The extension
+    // is local (not in TS 103 770); the practice of offering a unicast service instance next to
+    // the 5G one is described in ETSI TR 103 972 clauses 6.4.3.1 and 6.4.3.2.
+    if (mbms5g?.fallback && !instances.some(i => i.url === mbms5g.fallback)) {
+      const isHls = /\.m3u8(\?|#|$)/i.test(mbms5g.fallback);
+      instances.push({
+        priority: mbms5g.priority, label: `${displayName} (unicast fallback)`, url: mbms5g.fallback,
+        type: isHls ? 'application/vnd.apple.mpegurl' : 'application/dash+xml',
+        hasAudioDescription: false, hasHardOfHearing: false, protection: null, origSource: null,
+        subtitleCarriage: null, viaFallback: true,
+      });
+    }
 
     instances.sort((a, b) => a.priority - b.priority);
     // A service with a real ServiceInstance but zero playable (IP-deliverable) instances is kept
