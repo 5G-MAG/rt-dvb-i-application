@@ -22,7 +22,7 @@ load balancer would need a shared store).
 | Variable | Default | What it does |
 |---|---|---|
 | `PORT` | `5000` | port to listen on |
-| `PROXY_ALLOW_ORIGINS` | unset | comma-separated origins `/proxy` may fetch despite resolving to a private or loopback address, matched exactly on scheme, host and port. **Without it a service list published on the same machine cannot be loaded**, because the SSRF guard correctly refuses it. Example: `http://localhost:4000,http://127.0.0.1:4000`. Everything not named stays guarded. |
+| `PROXY_ALLOW_ORIGINS` | `http://localhost:4000,http://127.0.0.1:4000` when unset | comma-separated origins `/proxy` may fetch despite resolving to a private or loopback address, matched exactly on scheme, host and port. Setting it replaces the default, and an empty value allows none, which is what a public deployment should do. Everything not named stays guarded. |
 | `PROXY_MAX_BYTES` | `10485760` | ceiling on a proxied response. Raise it for an unusually large service list; a body over the limit is refused with 502 rather than truncated. |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
 | `HTTPS_KEY_PATH`, `HTTPS_CERT_PATH` | unset | serve HTTPS directly instead of behind a proxy |

@@ -141,3 +141,37 @@ test('an oversized upstream response is refused, not buffered', async (t) => {
     upstream.close();
   }
 });
+
+// A plain `npm start` has no PROXY_ALLOW_ORIGINS, and the client's default list is
+// http://localhost:4000/service-list.xml, so the default must allow that origin and no other.
+// The allowlist is read when server.js is loaded, so each case runs in its own process.
+const { execFileSync } = require('node:child_process');
+function guardIn(env, urls) {
+  const code = `const { assertSafeUrl } = require('./server.js');
+    Promise.all(${JSON.stringify(urls)}.map(u => assertSafeUrl(u).then(() => true, () => false)))
+      .then(r => console.log(JSON.stringify(r)));`;
+  const e = { ...process.env, LOG_LEVEL: 'error', ...env };
+  if (env.PROXY_ALLOW_ORIGINS === undefined) delete e.PROXY_ALLOW_ORIGINS;
+  return JSON.parse(execFileSync(process.execPath, ['-e', code], { cwd: require('node:path').join(__dirname, '..'), env: e }).toString());
+}
+
+test('with PROXY_ALLOW_ORIGINS unset, the default local list origin is allowed and nothing else local', () => {
+  assert.deepEqual(
+    guardIn({}, ['http://localhost:4000/service-list.xml', 'http://127.0.0.1:4000/epg', 'http://localhost:4001/x', 'http://192.168.1.1/']),
+    [true, true, false, false]);
+});
+
+test('an empty PROXY_ALLOW_ORIGINS turns the default exemption off', () => {
+  assert.deepEqual(guardIn({ PROXY_ALLOW_ORIGINS: '' }, ['http://localhost:4000/service-list.xml']), [false]);
+});
+
+test('a refused local address is answered with the setting to change', async () => {
+  const srv = app.listen(0);
+  await new Promise(r => srv.once('listening', r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/proxy?url=${encodeURIComponent('http://192.168.1.1/list.xml')}`);
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.hint, /PROXY_ALLOW_ORIGINS="http:\/\/localhost:4000" npm start/);
+  } finally { srv.close(); }
+});

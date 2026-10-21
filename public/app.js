@@ -5,7 +5,13 @@ function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
-const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
+// No default registry address. The one shipped earlier (slrdb.org/dvbi/provider-offerings) answers
+// 404, and neither TS 103 770 V1.2.1 nor TR 103 972 names a registry to use. The examples in
+// clause 5.1.3 (host csr.dvbservices.com, contact dvbi_csr@dvbservices.com) are examples only, not
+// designated defaults: the note in clause 8.5.3.1 says "At the time of writing, there is no Central Service
+// List Registry". The address is entered in settings and kept.
+const DEFAULT_REGISTRY = '';
+const RETIRED_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 // Namespace of the LOCAL 5G delivery extension. Nothing in DVB defines it: TS 103 770 has no MBMS
 // delivery parameters, so the provider carries them in OtherDeliveryParameters under a 5G-MAG
 // namespace. See the provider's schemas/dvbi-5g-ext-1.0.xsd and its COMPLIANCE.md.
@@ -352,6 +358,18 @@ function resolveUrl(url) {
   } catch { return url; }
 }
 
+// The text for a failed fetch. When the request went through /proxy, the proxy's JSON body says
+// why (and, for a refused local address, which setting to change), so show that rather than a bare
+// status code.
+async function httpErrorText(res, url) {
+  let detail = '';
+  try {
+    const body = await res.clone().json();
+    detail = [body.error, body.hint].filter(Boolean).join('. ');
+  } catch { /* not JSON: the status alone is all there is */ }
+  return `HTTP ${res.status} for ${url}${detail ? `: ${detail}` : ''}`;
+}
+
 // ── LCN region-aware assignment (A184r2 §4.8, Table 4.8-1) ───────────────────
 
 function buildLCNMap(tables, svcs, region) {
@@ -547,7 +565,9 @@ function parseServiceList(doc) {
     // reachable over 5G broadcast AND marked as relying on a non-DVB extension.
     let mbms5g = null;
     for (const inst of svc.getElementsByTagNameNS(NS, 'ServiceInstance')) {
-      const priority = parseInt(inst.getAttribute('priority') || '99', 10);
+      // @priority is optional; when absent it is 0 (the schema's default, TS 103 770 clause 5.5.4
+      // and the schema's default; table 16 lists the attribute as optional), the highest priority, so an instance with no @priority sorts first, not last.
+      const priority = parseInt(inst.getAttribute('priority') || '0', 10);
       const label    = getNS(inst, 'DisplayName', NS) || displayName;
 
       // Broadcast-only delivery (DVB-T/S/C tuning triplet, TS 103 770 §5.5.18 Delivery Parameters) — a browser has no TV tuner,
@@ -600,16 +620,24 @@ function parseServiceList(doc) {
 
       // The local 5G extension, recognised by its own namespace so a document that does not use it
       // is unaffected. It yields no playable instance: a browser cannot join an MBMS bearer, so the
-      // unicast fallback the extension names is what actually plays.
+      // unicast fallback the extension names is what actually plays (added as a playable instance
+      // after the loop below).
       if (!mbms5g) {
         const ext5g = [...inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')]
           .find(e => e.getElementsByTagNameNS(NS_DVBI_5G, 'ServiceLocator')[0]);
         if (ext5g) {
+          const fbEl = ext5g.getElementsByTagNameNS(NS_DVBI_5G, 'UnicastFallback')[0];
           const pick = n => ext5g.getElementsByTagNameNS(NS_DVBI_5G, n)[0]?.textContent.trim() || null;
           mbms5g = {
             locator:      pick('ServiceLocator'),
             serviceClass: pick('ServiceClass'),
             fallback:     pick('UnicastFallback'),
+            fallbackType: fbEl?.getAttribute('type') || null,
+            priority,
+            // ContentProtection and ContentAttributes belong to the service instance (TS 103 770
+            // table 16), so the derived fallback inherits them from this 5G instance.
+            inherited: { hasAudioDescription, hasHardOfHearing, protection, subtitleCarriage,
+                         contentAttributes: caEl || null },
             extensionName: ext5g.getAttribute('extensionName') || null,
           };
         }
@@ -712,6 +740,32 @@ function parseServiceList(doc) {
       name: aspEl.getAttribute('extensionName') || '',
     } : null;
 
+    // The unicast fallback named by the local 5G extension (not in TS 103 770 or TR 103 972). The
+    // 5G instance itself is not playable in a browser. ETSI TR 103 972 clause 6.4.3.1 models
+    // unicast plus 5G as two separate DVB-I service instances, and clause 6.4.3.2 has the 5G one
+    // signalled with the HIGHER priority (TS 103 770 table 16: lower value = higher priority). So
+    // the fallback becomes a separate instance with priority (5G priority + 1): it plays only when
+    // the 5G instance cannot be played here. It is pushed after the existing instances and the sort
+    // below is stable, so any standard instance that already has priority + 1 stays ahead of it.
+    // It inherits ContentProtection and ContentAttributes from the 5G instance (per instance in
+    // table 16). It is not added when the service already lists the same URL as an instance.
+    if (mbms5g?.fallback && !instances.some(i => i.url === mbms5g.fallback)) {
+      // Media type: the extension element's own type attribute if present; otherwise a GUESS from
+      // the URL extension (.m3u8 = HLS, .mpd = DASH); otherwise DASH. The extension does not
+      // define a type, so the guess is only as good as the URL.
+      const fbUrl = mbms5g.fallback;
+      const type = mbms5g.fallbackType
+        || (/\.m3u8(\?|#|$)/i.test(fbUrl) ? 'application/vnd.apple.mpegurl'
+          : /\.mpd(\?|#|$)/i.test(fbUrl) ? 'application/dash+xml'
+          : 'application/dash+xml');
+      const { hasAudioDescription, hasHardOfHearing, protection, subtitleCarriage, contentAttributes } = mbms5g.inherited;
+      instances.push({
+        priority: mbms5g.priority + 1, label: `${displayName} (unicast fallback)`, url: fbUrl, type,
+        hasAudioDescription, hasHardOfHearing, protection, origSource: null,
+        subtitleCarriage, contentAttributes, viaFallback: true,
+      });
+    }
+
     instances.sort((a, b) => a.priority - b.priority);
     // A service with a real ServiceInstance but zero playable (IP-deliverable) instances is kept
     // in the list — noIpDelivery lets the UI show it as broadcast-only rather than hiding it.
@@ -758,7 +812,7 @@ async function loadServiceList(urlOrUrls) {
       if (lastModifiedMap[url]) headers['If-Modified-Since'] = lastModifiedMap[url];
       const res = await fetch(resolveUrl(url), { headers });
       if (res.status === 304) return; // not modified — keep current services & playback intact
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await httpErrorText(res, url));
       const lm = res.headers.get('Last-Modified');
       if (lm) lastModifiedMap[url] = lm;
       const ctype = (res.headers.get('Content-Type') || '').toLowerCase();
@@ -1666,13 +1720,24 @@ function showSLRPicker(entries) {
   container.hidden = false;
 }
 
+function showSLRMessage(text) {
+  const el = $('slr-results');
+  el.hidden = false;
+  el.innerHTML = `<div class="ch-error" role="alert">${esc(text)}</div>`;
+}
+
 $('slr-load-btn').addEventListener('click', async () => {
   const cc = $('slr-input').value.trim().toUpperCase();
   if (!cc) return;
   // Which registry to ask is a deployment choice, not something to hard-code: a manufacturer, a
   // regulator, an operator and a central registry are all named as possible operators in
-  // TS 103 770 V1.2.1 clause 5.1.3.2. The default keeps the public registry this shipped with.
+  // TS 103 770 V1.2.1 clause 5.1.3.2. There is no default address.
   const endpoint = ($('slr-endpoint').value || '').trim() || DEFAULT_REGISTRY;
+  if (!endpoint) {
+    listNameEl.textContent = 'No registry address';
+    showSLRMessage('No Service List Registry address is set. Enter the registry\'s query address in the field above (for example https://registry.example/query), then look up a country again.');
+    return;
+  }
   localStorage.setItem('dvbi-slr-endpoint', endpoint);
   const sep = endpoint.includes('?') ? '&' : '?';
   const registryUrl = `${endpoint}${sep}TargetCountry=${encodeURIComponent(cc)}`;
@@ -1682,7 +1747,7 @@ $('slr-load-btn').addEventListener('click', async () => {
   listNameEl.textContent = 'Looking up SLR…';
   try {
     const res = await fetch(resolveUrl(registryUrl));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error(await httpErrorText(res, registryUrl));
     const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
     const entries = parseSLRResponse(doc);
     if (entries) {
@@ -1702,6 +1767,7 @@ $('slr-load-btn').addEventListener('click', async () => {
     }
   } catch (err) {
     listNameEl.textContent = 'SLR lookup failed';
+    showSLRMessage(`The registry lookup failed (${err.message}). Check the registry address in settings.`);
     console.error('SLR error:', err);
   }
 });
@@ -2238,7 +2304,9 @@ updateCustomListCount();
 {
   const saved = localStorage.getItem('dvbi-slr-endpoint');
   const el = $('slr-endpoint');
-  if (el) el.value = saved || DEFAULT_REGISTRY;
+  // An earlier version stored the retired default when it was used; do not keep offering it.
+  if (saved === RETIRED_REGISTRY) localStorage.removeItem('dvbi-slr-endpoint');
+  if (el) el.value = (saved && saved !== RETIRED_REGISTRY ? saved : '') || DEFAULT_REGISTRY;
 }
 urlInput.value = currentListUrl;
 loadServiceList(currentListUrl).then(() => {

@@ -66,19 +66,33 @@ npm install
 npm start           # http://localhost:5000
 ```
 
-By default it loads `http://localhost:4000/service-list.xml`, which is where the provider serves one.
-To use a different list, open settings and set the URL, or pass it in the query string:
+A service list published on the same machine, such as the provider's, is reached through the
+`/proxy` endpoint, which refuses private and loopback addresses unless their origin is named in
+`PROXY_ALLOW_ORIGINS`. When the variable is not set, the origins of the default local list,
+`http://localhost:4000` and `http://127.0.0.1:4000`, are allowed, so the default list loads with a
+plain `npm start`. For a list on any other local address or port, name its origin:
+
+```bash
+PROXY_ALLOW_ORIGINS="http://localhost:4000,http://192.168.1.20:8080" npm start
+```
+
+Setting the variable replaces the default, and setting it empty (`PROXY_ALLOW_ORIGINS=""`) allows
+no local origin, which is what a public deployment should do. If a list is refused, the error shown
+in the channel list names this setting.
+
+By default the client loads `http://localhost:4000/service-list.xml`, which is where the provider
+serves one. To use a different list, open settings and set the URL, or pass it in the query string:
 
 ```
 http://localhost:5000/?url=http://localhost:4000/service-list.xml
 ```
 
-**A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
-private and loopback addresses, which is where a local provider sits, so name its origin explicitly:
-
-```bash
-PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
-```
+The Service List Registry address has no default: no registry address is given by TS 103 770 or
+TR 103 972, and the one this client used earlier no longer answers. Enter the registry's query
+address in settings before looking up a country.
+The host names in the examples of TS 103 770 clause 5.1.3 (`csr.dvbservices.com`) are examples only,
+not designated defaults: the specification notes that at the time of writing there is no Central
+Service List Registry.
 
 ## Configuration
 
@@ -97,7 +111,13 @@ in `schemas/dvbi-5g-ext-1.0.xsd`.
 This receiver understands it and says so plainly: affected services get a dashed **5G ext** badge
 whose tooltip names the extension and states that it is local, and a service reachable *only* over
 5G shows "5G only" with a message explaining that a browser cannot join an MBMS bearer. Playback,
-where it happens, uses the unicast fallback the extension names or another instance of the service.
+where it happens, uses another instance of the service or the unicast fallback the extension names.
+`UnicastFallback` is a local extension; it is not in TS 103 770 or TR 103 972. Following the model
+of TR 103 972 clauses 6.4.3.1 and 6.4.3.2 (unicast and 5G as separate service instances, the 5G
+one with the higher priority), the receiver turns it into a separate unicast instance with a lower
+priority than the 5G instance (its priority + 1). That instance inherits the 5G instance's content
+protection and content attributes, and takes its media type from the element's `type` attribute,
+else from the URL extension (`.m3u8` HLS, `.mpd` DASH), else DASH.
 
 A receiver that did not know the namespace would simply find no delivery parameters it understands
 on that instance and move on, which is the intended behaviour.
