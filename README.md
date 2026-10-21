@@ -66,19 +66,30 @@ npm install
 npm start           # http://localhost:5000
 ```
 
-By default it loads `http://localhost:4000/service-list.xml`, which is where the provider serves one.
-To use a different list, open settings and set the URL, or pass it in the query string:
+A service list published on the same machine, such as the provider's, is reached through the
+`/proxy` endpoint, which refuses private and loopback addresses unless their origin is named in
+`PROXY_ALLOW_ORIGINS`. When the variable is not set, the origins of the default local list,
+`http://localhost:4000` and `http://127.0.0.1:4000`, are allowed, so the default list loads with a
+plain `npm start`. For a list on any other local address or port, name its origin:
+
+```bash
+PROXY_ALLOW_ORIGINS="http://localhost:4000,http://192.168.1.20:8080" npm start
+```
+
+Setting the variable replaces the default, and setting it empty (`PROXY_ALLOW_ORIGINS=""`) allows
+no local origin, which is what a public deployment should do. If a list is refused, the error shown
+in the channel list names this setting.
+
+By default the client loads `http://localhost:4000/service-list.xml`, which is where the provider
+serves one. To use a different list, open settings and set the URL, or pass it in the query string:
 
 ```
 http://localhost:5000/?url=http://localhost:4000/service-list.xml
 ```
 
-**A list published on the same machine needs `PROXY_ALLOW_ORIGINS`.** The `/proxy` endpoint refuses
-private and loopback addresses, which is where a local provider sits, so name its origin explicitly:
-
-```bash
-PROXY_ALLOW_ORIGINS="http://localhost:4000,http://127.0.0.1:4000" npm start
-```
+The Service List Registry address has no default: no registry address is given by TS 103 770 or
+TR 103 972, and the one this client used earlier no longer answers. Enter the registry's query
+address in settings before looking up a country.
 
 ## Configuration
 

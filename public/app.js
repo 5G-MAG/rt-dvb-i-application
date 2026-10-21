@@ -5,7 +5,11 @@ function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 const DEFAULT_URL   = 'http://localhost:4000/service-list.xml';
-const DEFAULT_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
+// No default registry address. The one shipped earlier (slrdb.org/dvbi/provider-offerings) answers
+// 404, and neither TS 103 770 V1.2.1 nor TR 103 972 names a registry to use: the examples in
+// TS 103 770 clause 5.1.3 use placeholder hosts. The address is entered in settings and kept.
+const DEFAULT_REGISTRY = '';
+const RETIRED_REGISTRY = 'https://slrdb.org/dvbi/provider-offerings';
 // Namespace of the LOCAL 5G delivery extension. Nothing in DVB defines it: TS 103 770 has no MBMS
 // delivery parameters, so the provider carries them in OtherDeliveryParameters under a 5G-MAG
 // namespace. See the provider's schemas/dvbi-5g-ext-1.0.xsd and its COMPLIANCE.md.
@@ -350,6 +354,18 @@ function resolveUrl(url) {
     // and bare relative paths reach the proxy as an absolute http(s) URL its new URL() can parse.
     return `/proxy?url=${encodeURIComponent(u.href)}`;
   } catch { return url; }
+}
+
+// The text for a failed fetch. When the request went through /proxy, the proxy's JSON body says
+// why (and, for a refused local address, which setting to change), so show that rather than a bare
+// status code.
+async function httpErrorText(res, url) {
+  let detail = '';
+  try {
+    const body = await res.clone().json();
+    detail = [body.error, body.hint].filter(Boolean).join('. ');
+  } catch { /* not JSON: the status alone is all there is */ }
+  return `HTTP ${res.status} for ${url}${detail ? `: ${detail}` : ''}`;
 }
 
 // ── LCN region-aware assignment (A184r2 §4.8, Table 4.8-1) ───────────────────
@@ -775,7 +791,7 @@ async function loadServiceList(urlOrUrls) {
       if (lastModifiedMap[url]) headers['If-Modified-Since'] = lastModifiedMap[url];
       const res = await fetch(resolveUrl(url), { headers });
       if (res.status === 304) return; // not modified — keep current services & playback intact
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await httpErrorText(res, url));
       const lm = res.headers.get('Last-Modified');
       if (lm) lastModifiedMap[url] = lm;
       const ctype = (res.headers.get('Content-Type') || '').toLowerCase();
@@ -1683,13 +1699,24 @@ function showSLRPicker(entries) {
   container.hidden = false;
 }
 
+function showSLRMessage(text) {
+  const el = $('slr-results');
+  el.hidden = false;
+  el.innerHTML = `<div class="ch-error" role="alert">${esc(text)}</div>`;
+}
+
 $('slr-load-btn').addEventListener('click', async () => {
   const cc = $('slr-input').value.trim().toUpperCase();
   if (!cc) return;
   // Which registry to ask is a deployment choice, not something to hard-code: a manufacturer, a
   // regulator, an operator and a central registry are all named as possible operators in
-  // TS 103 770 V1.2.1 clause 5.1.3.2. The default keeps the public registry this shipped with.
+  // TS 103 770 V1.2.1 clause 5.1.3.2. There is no default address.
   const endpoint = ($('slr-endpoint').value || '').trim() || DEFAULT_REGISTRY;
+  if (!endpoint) {
+    listNameEl.textContent = 'No registry address';
+    showSLRMessage('No Service List Registry address is set. Enter the registry\'s query address in the field above (for example https://registry.example/query), then look up a country again.');
+    return;
+  }
   localStorage.setItem('dvbi-slr-endpoint', endpoint);
   const sep = endpoint.includes('?') ? '&' : '?';
   const registryUrl = `${endpoint}${sep}TargetCountry=${encodeURIComponent(cc)}`;
@@ -1699,7 +1726,7 @@ $('slr-load-btn').addEventListener('click', async () => {
   listNameEl.textContent = 'Looking up SLR…';
   try {
     const res = await fetch(resolveUrl(registryUrl));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error(await httpErrorText(res, registryUrl));
     const doc = new DOMParser().parseFromString(await res.text(), 'application/xml');
     const entries = parseSLRResponse(doc);
     if (entries) {
@@ -1719,6 +1746,7 @@ $('slr-load-btn').addEventListener('click', async () => {
     }
   } catch (err) {
     listNameEl.textContent = 'SLR lookup failed';
+    showSLRMessage(`The registry lookup failed (${err.message}). Check the registry address in settings.`);
     console.error('SLR error:', err);
   }
 });
@@ -2255,7 +2283,9 @@ updateCustomListCount();
 {
   const saved = localStorage.getItem('dvbi-slr-endpoint');
   const el = $('slr-endpoint');
-  if (el) el.value = saved || DEFAULT_REGISTRY;
+  // An earlier version stored the retired default when it was used; do not keep offering it.
+  if (saved === RETIRED_REGISTRY) localStorage.removeItem('dvbi-slr-endpoint');
+  if (el) el.value = (saved && saved !== RETIRED_REGISTRY ? saved : '') || DEFAULT_REGISTRY;
 }
 urlInput.value = currentListUrl;
 loadServiceList(currentListUrl).then(() => {

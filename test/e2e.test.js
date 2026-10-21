@@ -350,3 +350,25 @@ test('the 5G extension UnicastFallback is played when the 5G instance cannot be'
   const hybrid = await page.evaluate(() => services.find(s => s.name === 'Hybrid 5G').instances.map(i => i.url));
   assert.deepEqual(hybrid, [`${baseUrl}/dash/hybrid.mpd`]);
 });
+
+// There is no confirmed public registry address (the former default answers 404), so the field
+// starts empty, a lookup without an address says so instead of sending a request, and the retired
+// default stored by an earlier version is not offered again. The dead "DVB Sample" preset is gone.
+test('the registry address has no default and says so when it is missing', { skip: !playwright }, async () => {
+  await page.goto(`${baseUrl}/?url=${encodeURIComponent(baseUrl + '/service-list.xml')}`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => localStorage.setItem('dvbi-slr-endpoint', 'https://slrdb.org/dvbi/provider-offerings'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.ch-name', { timeout: 10000 });
+
+  assert.equal(await page.inputValue('#slr-endpoint'), '', 'the retired default must not come back');
+  assert.equal(await page.locator('.preset-btn:text("DVB Sample")').count(), 0);
+  const presets = await page.$$eval('.preset-btn', els => els.map(e => e.dataset.url));
+  assert.ok(presets.every(u => !/DVBproject\/dvbi-api-demos/.test(u)), 'no preset points at the 404 repository');
+
+  const requests = [];
+  page.on('request', r => requests.push(r.url()));
+  await page.evaluate(() => { $('slr-input').value = 'GBR'; $('slr-load-btn').click(); });
+  await page.waitForSelector('#slr-results:not([hidden])', { state: 'attached', timeout: 3000 });
+  assert.match(await page.textContent('#slr-results'), /No Service List Registry address is set/);
+  assert.equal(requests.filter(u => /TargetCountry|slrdb/.test(u)).length, 0, 'no request is sent without an address');
+});

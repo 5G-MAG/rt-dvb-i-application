@@ -89,8 +89,17 @@ function isPrivateIp(ip) {
 // Everything not named stays guarded, so this permits one known service list rather than turning
 // the protection off. Note that an allowlisted origin skips the address check by design, so a
 // hostname that later resolves elsewhere would be followed: name origins you control.
+//
+// When PROXY_ALLOW_ORIGINS is not set at all, the origins of the provider's default local address
+// (http://localhost:4000, which is also the client's default service list) are allowed, so a plain
+// `npm start` can load that list. Setting it, even to an empty string, replaces this default;
+// an empty value turns the exemption off, which is what a public deployment should do.
+const DEFAULT_PROXY_ALLOW_ORIGINS = 'http://localhost:4000,http://127.0.0.1:4000';
+const PROXY_ALLOW_ORIGINS_SOURCE = process.env.PROXY_ALLOW_ORIGINS === undefined
+  ? DEFAULT_PROXY_ALLOW_ORIGINS
+  : process.env.PROXY_ALLOW_ORIGINS;
 const PROXY_ALLOW_ORIGINS = new Set(
-  (process.env.PROXY_ALLOW_ORIGINS || '')
+  PROXY_ALLOW_ORIGINS_SOURCE
     .split(',')
     .map(o => o.trim().replace(/\/+$/, ''))
     .filter(Boolean)
@@ -138,7 +147,16 @@ app.get('/proxy', rateLimit('proxy', 60, 60000), async (req, res) => {
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
   try {
     await assertSafeUrl(url);
-  } catch (e) { return res.status(400).json({ error: String(e.message || e) }); }
+  } catch (e) {
+    // A refused private address is the usual first-run failure, so say what to set.
+    const refused = /disallowed \(private\/loopback\)/.test(String(e.message || e));
+    return res.status(400).json({
+      error: String(e.message || e),
+      ...(refused && { hint: 'The proxy only fetches public addresses. To load a list from this machine, ' +
+        'start the client with PROXY_ALLOW_ORIGINS set to its origin, for example ' +
+        'PROXY_ALLOW_ORIGINS="http://localhost:4000" npm start' }),
+    });
+  }
   try {
     const upstream = await fetch(url, {
       headers: { 'User-Agent': 'DVBIReceiver/1.0', Accept: 'application/xml,*/*' },
@@ -165,6 +183,7 @@ function startServer() {
   if (PROXY_ALLOW_ORIGINS.size) {
     logger.warn('/proxy will follow these origins without the private-address check', {
       origins: [...PROXY_ALLOW_ORIGINS],
+      source: process.env.PROXY_ALLOW_ORIGINS === undefined ? 'default (PROXY_ALLOW_ORIGINS not set)' : 'PROXY_ALLOW_ORIGINS',
     });
   }
   if (process.env.ALLOW_LOOPBACK_PROXY === '1') {

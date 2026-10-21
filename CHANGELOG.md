@@ -1,5 +1,21 @@
 # Changelog — rt-dvb-i-application
 
+## 2026-10 — Defaults and the 5G unicast fallback
+
+- **The 5G extension's `UnicastFallback` is played.** It was stored and never used, so a service
+  with only a 5G instance and a fallback URL showed "5G only" and said it listed no fallback. The
+  URL now becomes a playable instance at the 5G instance's priority (DASH or HLS from the URL),
+  unless the service already lists it. The extension is local; TR 103 972 clauses 6.4.3.1 to
+  6.4.3.3 describe offering a unicast instance beside the 5G one.
+- **No default registry address.** `https://slrdb.org/dvbi/provider-offerings` answers 404 and no
+  specification names a registry. The field starts empty, a lookup without an address says so, and
+  a failed lookup shows its reason. The retired value stored by earlier versions is dropped.
+- **The "DVB Sample" preset is removed**; its repository, DVBproject/dvbi-api-demos, answers 404.
+- **A plain `npm start` loads the default local list.** When `PROXY_ALLOW_ORIGINS` is not set,
+  `http://localhost:4000` and `http://127.0.0.1:4000` are allowed. A refused address is reported
+  with the setting to change.
+
+
 ## 2026-09 (cont. 6) — Registry lookup: conformant responses, and a configurable endpoint
 
 - **A conformant registry response is now understood.** The lookup accepted only a
