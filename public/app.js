@@ -626,12 +626,18 @@ function parseServiceList(doc) {
         const ext5g = [...inst.getElementsByTagNameNS(NS, 'OtherDeliveryParameters')]
           .find(e => e.getElementsByTagNameNS(NS_DVBI_5G, 'ServiceLocator')[0]);
         if (ext5g) {
+          const fbEl = ext5g.getElementsByTagNameNS(NS_DVBI_5G, 'UnicastFallback')[0];
           const pick = n => ext5g.getElementsByTagNameNS(NS_DVBI_5G, n)[0]?.textContent.trim() || null;
           mbms5g = {
             locator:      pick('ServiceLocator'),
             serviceClass: pick('ServiceClass'),
             fallback:     pick('UnicastFallback'),
+            fallbackType: fbEl?.getAttribute('type') || null,
             priority,
+            // ContentProtection and ContentAttributes belong to the service instance (TS 103 770
+            // table 16), so the derived fallback inherits them from this 5G instance.
+            inherited: { hasAudioDescription, hasHardOfHearing, protection, subtitleCarriage,
+                         contentAttributes: caEl || null },
             extensionName: ext5g.getAttribute('extensionName') || null,
           };
         }
@@ -734,18 +740,29 @@ function parseServiceList(doc) {
       name: aspEl.getAttribute('extensionName') || '',
     } : null;
 
-    // The unicast fallback named by the local 5G extension. The 5G instance itself is not playable
-    // in a browser, so the fallback URL becomes an ordinary instance at the priority of the 5G
-    // instance, unless the service already lists that URL as an instance of its own. The extension
-    // is local (not in TS 103 770); the practice of offering a unicast service instance next to
-    // the 5G one is described in ETSI TR 103 972 clauses 6.4.3.1 and 6.4.3.2.
+    // The unicast fallback named by the local 5G extension (not in TS 103 770 or TR 103 972). The
+    // 5G instance itself is not playable in a browser. ETSI TR 103 972 clause 6.4.3.1 models
+    // unicast plus 5G as two separate DVB-I service instances, and clause 6.4.3.2 has the 5G one
+    // signalled with the HIGHER priority (TS 103 770 table 16: lower value = higher priority). So
+    // the fallback becomes a separate instance with priority (5G priority + 1): it plays only when
+    // the 5G instance cannot be played here. It is pushed after the existing instances and the sort
+    // below is stable, so any standard instance that already has priority + 1 stays ahead of it.
+    // It inherits ContentProtection and ContentAttributes from the 5G instance (per instance in
+    // table 16). It is not added when the service already lists the same URL as an instance.
     if (mbms5g?.fallback && !instances.some(i => i.url === mbms5g.fallback)) {
-      const isHls = /\.m3u8(\?|#|$)/i.test(mbms5g.fallback);
+      // Media type: the extension element's own type attribute if present; otherwise a GUESS from
+      // the URL extension (.m3u8 = HLS, .mpd = DASH); otherwise DASH. The extension does not
+      // define a type, so the guess is only as good as the URL.
+      const fbUrl = mbms5g.fallback;
+      const type = mbms5g.fallbackType
+        || (/\.m3u8(\?|#|$)/i.test(fbUrl) ? 'application/vnd.apple.mpegurl'
+          : /\.mpd(\?|#|$)/i.test(fbUrl) ? 'application/dash+xml'
+          : 'application/dash+xml');
+      const { hasAudioDescription, hasHardOfHearing, protection, subtitleCarriage, contentAttributes } = mbms5g.inherited;
       instances.push({
-        priority: mbms5g.priority, label: `${displayName} (unicast fallback)`, url: mbms5g.fallback,
-        type: isHls ? 'application/vnd.apple.mpegurl' : 'application/dash+xml',
-        hasAudioDescription: false, hasHardOfHearing: false, protection: null, origSource: null,
-        subtitleCarriage: null, viaFallback: true,
+        priority: mbms5g.priority + 1, label: `${displayName} (unicast fallback)`, url: fbUrl, type,
+        hasAudioDescription, hasHardOfHearing, protection, origSource: null,
+        subtitleCarriage, contentAttributes, viaFallback: true,
       });
     }
 

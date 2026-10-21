@@ -60,6 +60,7 @@ function fixture5gXml(base) {
   xmlns="urn:dvb:metadata:servicediscovery:2024"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:dvbi5g="urn:5g-mag:metadata:dvbi-5g:2026"
+  xmlns:tva="urn:tva:metadata:2024"
   id="tag:dvbi.example,2024:servicelist:5g" version="1" xml:lang="en">
   <Name>5G Extension List</Name>
   <ProviderName>Sample Provider</ProviderName>
@@ -98,6 +99,13 @@ function fixture5gXml(base) {
     <UniqueIdentifier>tag:sample,2024:service:5gfallback</UniqueIdentifier>
     <ServiceInstance priority="1">
       <DisplayName>5G With Fallback</DisplayName>
+      <ContentAttributes>
+        <AccessibilityAttributes><tva:AudioDescriptionAttributes/></AccessibilityAttributes>
+      </ContentAttributes>
+      <ContentProtection>
+        <DRMSystemId>edef8ba9-79d6-4ace-a3c8-27dcd51d21ed</DRMSystemId>
+        <LicenseServerURL>https://license.example/widevine</LicenseServerURL>
+      </ContentProtection>
       <OtherDeliveryParameters extensionName="urn:5g-mag:dvbi-5g:mbms" xsi:type="dvbi5g:MBMSDeliveryParametersType">
         <dvbi5g:ServiceLocator>urn:3gpp:mbms:service:fb</dvbi5g:ServiceLocator>
         <dvbi5g:ServiceClass>urn:dvb:metadata:serviceClass:DVB-I_Service_Instance:1</dvbi5g:ServiceClass>
@@ -105,6 +113,25 @@ function fixture5gXml(base) {
       </OtherDeliveryParameters>
     </ServiceInstance>
     <ServiceName>5G With Fallback</ServiceName>
+    <ProviderName>Sample Provider</ProviderName>
+  </Service>
+  <Service version="1">
+    <UniqueIdentifier>tag:sample,2024:service:5gtyped</UniqueIdentifier>
+    <ServiceInstance priority="1">
+      <DisplayName>5G Typed Fallback</DisplayName>
+      <OtherDeliveryParameters extensionName="urn:5g-mag:dvbi-5g:mbms" xsi:type="dvbi5g:MBMSDeliveryParametersType">
+        <dvbi5g:ServiceLocator>urn:3gpp:mbms:service:typed</dvbi5g:ServiceLocator>
+        <dvbi5g:ServiceClass>urn:dvb:metadata:serviceClass:DVB-I_Service_Instance:1</dvbi5g:ServiceClass>
+        <dvbi5g:UnicastFallback type="application/vnd.apple.mpegurl">${base}/stream/live</dvbi5g:UnicastFallback>
+      </OtherDeliveryParameters>
+    </ServiceInstance>
+    <ServiceInstance priority="3">
+      <DisplayName>5G Typed Fallback</DisplayName>
+      <DASHDeliveryParameters>
+        <UriBasedLocation contentLinkType="application/dash+xml"><URI>${base}/dash/other.mpd</URI></UriBasedLocation>
+      </DASHDeliveryParameters>
+    </ServiceInstance>
+    <ServiceName>5G Typed Fallback</ServiceName>
     <ProviderName>Sample Provider</ProviderName>
   </Service>
 </ServiceList>`;
@@ -338,6 +365,13 @@ test('the 5G extension UnicastFallback is played when the 5G instance cannot be'
   assert.equal(inst.length, 1);
   assert.equal(inst[0].url, `${baseUrl}/hls/fallback.m3u8`);
   assert.equal(inst[0].type, 'application/vnd.apple.mpegurl');
+  // TR 103 972 clauses 6.4.3.1/6.4.3.2: a separate instance, ranked below the 5G one (priority 1).
+  assert.equal(inst[0].priority, 2, 'the fallback has a lower priority than the 5G instance (5G priority + 1)');
+  assert.equal(inst[0].viaFallback, true);
+  // Table 16: protection and attributes are per instance, so they come from the 5G instance.
+  assert.equal(inst[0].protection?.system, 'edef8ba9-79d6-4ace-a3c8-27dcd51d21ed');
+  assert.equal(inst[0].protection?.licenseUrl, 'https://license.example/widevine');
+  assert.equal(inst[0].hasAudioDescription, true);
 
   // The player is the part that needs CDN libraries, so record what it is asked to play.
   await page.evaluate(() => { window.__played = []; DVBIPlayer.play = (v, url, type) => window.__played.push({ url, type }); });
@@ -349,6 +383,15 @@ test('the 5G extension UnicastFallback is played when the 5G instance cannot be'
   // Where the service already lists the same URL as an instance of its own, it is not doubled.
   const hybrid = await page.evaluate(() => services.find(s => s.name === 'Hybrid 5G').instances.map(i => i.url));
   assert.deepEqual(hybrid, [`${baseUrl}/dash/hybrid.mpd`]);
+
+  // The type attribute of the extension element wins over the URL (which has no extension here);
+  // the fallback (priority 2) sorts after the 5G instance's priority 1 and before the standard
+  // instance at priority 3, so the order stays consistent.
+  const typed = await page.evaluate(() => services.find(s => s.name === '5G Typed Fallback').instances.map(i => [i.priority, i.url, i.type]));
+  assert.deepEqual(typed, [
+    [2, `${baseUrl}/stream/live`, 'application/vnd.apple.mpegurl'],
+    [3, `${baseUrl}/dash/other.mpd`, 'application/dash+xml'],
+  ]);
 });
 
 // There is no confirmed public registry address (the former default answers 404), so the field

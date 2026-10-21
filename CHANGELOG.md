@@ -5,9 +5,14 @@
 - **A missing `ServiceInstance@priority` is 0**, as the schema's default says (clause 5.5.4, table 16 lists it as optional), not 99. An instance without it now ranks first, not last.
 - **The 5G extension's `UnicastFallback` is played.** It was stored and never used, so a service
   with only a 5G instance and a fallback URL showed "5G only" and said it listed no fallback. The
-  URL now becomes a playable instance at the 5G instance's priority (DASH or HLS from the URL),
-  unless the service already lists it. The extension is local; TR 103 972 clauses 6.4.3.1 to
-  6.4.3.3 describe offering a unicast instance beside the 5G one.
+  URL now becomes a separate unicast instance with a lower priority than the 5G instance (its
+  priority + 1), so it plays only when the 5G one cannot be played in the browser. This follows the
+  model of TR 103 972 clauses 6.4.3.1 and 6.4.3.2 (unicast and 5G as separate service instances,
+  the 5G one with the higher priority). The instance inherits the 5G instance's content protection
+  and content attributes (per instance, TS 103 770 table 16). Its media type is the extension
+  element's `type` attribute if present, else guessed from the URL (`.m3u8` HLS, `.mpd` DASH), else
+  DASH. It is not added when the service already lists the URL. `UnicastFallback` is a local
+  extension, not part of TS 103 770 or TR 103 972.
 - **No default registry address.** `https://slrdb.org/dvbi/provider-offerings` answers 404 and no
   specification names a registry. The hosts in the clause 5.1.3 examples
   (`csr.dvbservices.com`) are examples only, not designated defaults (clause 8.5.3.1, note 1: there is no

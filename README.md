@@ -111,7 +111,13 @@ in `schemas/dvbi-5g-ext-1.0.xsd`.
 This receiver understands it and says so plainly: affected services get a dashed **5G ext** badge
 whose tooltip names the extension and states that it is local, and a service reachable *only* over
 5G shows "5G only" with a message explaining that a browser cannot join an MBMS bearer. Playback,
-where it happens, uses the unicast fallback the extension names or another instance of the service.
+where it happens, uses another instance of the service or the unicast fallback the extension names.
+`UnicastFallback` is a local extension; it is not in TS 103 770 or TR 103 972. Following the model
+of TR 103 972 clauses 6.4.3.1 and 6.4.3.2 (unicast and 5G as separate service instances, the 5G
+one with the higher priority), the receiver turns it into a separate unicast instance with a lower
+priority than the 5G instance (its priority + 1). That instance inherits the 5G instance's content
+protection and content attributes, and takes its media type from the element's `type` attribute,
+else from the URL extension (`.m3u8` HLS, `.mpd` DASH), else DASH.
 
 A receiver that did not know the namespace would simply find no delivery parameters it understands
 on that instance and move on, which is the intended behaviour.
